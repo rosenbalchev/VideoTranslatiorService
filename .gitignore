@@ -1,0 +1,73 @@
+## .NET / C#
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.userprefs
+
+# Build outputs
+[Dd]ebug/
+[Rr]elease/
+[Bb]in/
+[Oo]bj/
+out/
+artifacts/
+
+# NuGet
+*.nupkg
+*.snupkg
+packages/
+!packages/build/
+.nuget/
+project.lock.json
+project.fragment.lock.json
+artifacts/
+
+# Rider / JetBrains
+.idea/
+*.sln.iml
+
+# Visual Studio
+.vs/
+*.VC.db
+*.VC.opendb
+*.ncb
+*.sap
+*.publishsettings
+PublishScripts/
+
+# Visual Studio Code
+.vscode/
+
+# Test results
+[Tt]est[Rr]esult*/
+[Bb]uild[Ll]og.*
+TestResult.xml
+*.trx
+*.coverage
+*.coveragexml
+coverage*/
+_reports/
+
+# Publish output
+publish/
+
+# EF Core migrations bundle
+efbundle*
+
+# SQLite databases (runtime artifacts)
+*.db
+*.db-shm
+*.db-wal
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Claude Code
+.claude/settings.local.json
