@@ -2,4 +2,5 @@
   <Project Path="VideoTranslatorService.Data\VideoTranslatorService.Data.csproj" />
   <Project Path="VideoTranslatorService.BLL\VideoTranslatorService.BLL.csproj" />
   <Project Path="VideoTranslatorService.CLI\VideoTranslatorService.CLI.csproj" />
+  <Project Path="VideoTranslatorService.Tests\VideoTranslatorService.Tests.csproj" />
 </Solution>

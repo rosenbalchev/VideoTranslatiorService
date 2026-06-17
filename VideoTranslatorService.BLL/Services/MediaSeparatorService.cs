@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using Microsoft.Extensions.Logging;
 using VideoTranslatorService.Data.Entities;
 using VideoTranslatorService.Data.Repositories;
@@ -9,11 +8,16 @@ public sealed class MediaSeparatorService : IMediaSeparatorService
 {
     private readonly IVideoJobRepository _repo;
     private readonly ILogger<MediaSeparatorService> _logger;
+    private readonly IProcessRunner _processRunner;
 
-    public MediaSeparatorService(IVideoJobRepository repo, ILogger<MediaSeparatorService> logger)
+    public MediaSeparatorService(
+        IVideoJobRepository repo,
+        ILogger<MediaSeparatorService> logger,
+        IProcessRunner processRunner)
     {
         _repo = repo;
         _logger = logger;
+        _processRunner = processRunner;
     }
 
     public async Task<(string AudioPath, string SilentVideoPath)> SeparateAsync(
@@ -29,13 +33,13 @@ public sealed class MediaSeparatorService : IMediaSeparatorService
         var silentVideoPath = Path.Combine(job.ProcessingFolderPath, $"{baseName}_silent.mp4");
 
         _logger.LogInformation("Extracting audio track from {Source}", job.ProcessingVideoPath);
-        await RunFfmpegAsync(
+        await _processRunner.RunAsync(
             ffmpegPath,
             $"-y -i \"{job.ProcessingVideoPath}\" -vn -acodec copy \"{audioPath}\"",
             ct);
 
         _logger.LogInformation("Stripping audio from video {Source}", job.ProcessingVideoPath);
-        await RunFfmpegAsync(
+        await _processRunner.RunAsync(
             ffmpegPath,
             $"-y -i \"{job.ProcessingVideoPath}\" -an -vcodec copy \"{silentVideoPath}\"",
             ct);
@@ -46,35 +50,5 @@ public sealed class MediaSeparatorService : IMediaSeparatorService
         await _repo.UpdateAsync(job, ct);
 
         return (audioPath, silentVideoPath);
-    }
-
-    private async Task RunFfmpegAsync(string ffmpegPath, string arguments, CancellationToken ct)
-    {
-        using var process = new Process
-        {
-            StartInfo = new ProcessStartInfo
-            {
-                FileName = ffmpegPath,
-                Arguments = arguments,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true
-            }
-        };
-
-        process.Start();
-
-        // Read stderr concurrently to prevent the buffer from blocking the process.
-        var stderrTask = process.StandardError.ReadToEndAsync(ct);
-        await process.WaitForExitAsync(ct);
-        var stderr = await stderrTask;
-
-        if (process.ExitCode != 0)
-        {
-            _logger.LogError("ffmpeg stderr:\n{Stderr}", stderr);
-            throw new InvalidOperationException(
-                $"ffmpeg exited with code {process.ExitCode}. See log for details.");
-        }
     }
 }

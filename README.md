@@ -10,7 +10,8 @@ A .NET 10 CLI tool that ingests video files, separates audio/video tracks, and (
 VideoTranslatiorService.slnx
 ├── VideoTranslatorService.Data/       ← EF Core entities, DbContext, repositories
 ├── VideoTranslatorService.BLL/        ← Business logic, pipeline services
-└── VideoTranslatorService.CLI/        ← Console entry-point, DI wiring, CLI options
+├── VideoTranslatorService.CLI/        ← Console entry-point, DI wiring, CLI options
+└── VideoTranslatorService.Tests/      ← xUnit unit tests (BLL + Data layers)
 ```
 
 ### Data layer (`VideoTranslatorService.Data`)
@@ -26,6 +27,7 @@ VideoTranslatiorService.slnx
 |---------|---------|
 | `IJobService` / `JobService` | Move file to processing folder, create job record, transition states |
 | `IMediaSeparatorService` / `MediaSeparatorService` | Call **ffmpeg** to extract audio and produce a silent video copy |
+| `IProcessRunner` / `DefaultProcessRunner` | Abstraction over `System.Diagnostics.Process` — enables unit testing without a real ffmpeg |
 
 ---
 
@@ -68,6 +70,49 @@ dotnet run --project VideoTranslatorService.CLI -- \
 # Optional flags
 #   --db path/to/videotranslator.db   (default: videotranslator.db in CWD)
 #   --ffmpeg path/to/ffmpeg.exe       (default: ffmpeg on PATH)
+```
+
+---
+
+## Testing
+
+Unit tests live in **`VideoTranslatorService.Tests`** and cover the BLL and Data layers.
+
+```bash
+# Run all tests
+dotnet test VideoTranslatiorService.slnx
+
+# Run with detailed output
+dotnet test VideoTranslatiorService.slnx --verbosity normal
+```
+
+### Test coverage
+
+| Area | File | What is tested |
+|------|------|----------------|
+| `JobService` | `Tests/BLL/JobServiceTests.cs` | File move, job creation, state transitions, error paths |
+| `MediaSeparatorService` | `Tests/BLL/MediaSeparatorServiceTests.cs` | Path building, ffmpeg invocation count, state update, error propagation |
+| `VideoJobRepository` | `Tests/Data/VideoJobRepositoryTests.cs` | CRUD operations, state filtering, `UpdatedAt` timestamp |
+
+### Test dependencies
+
+| Package | Role |
+|---------|------|
+| xunit | Test framework |
+| NSubstitute | Mocking (`IVideoJobRepository`, `IProcessRunner`) |
+| `Microsoft.EntityFrameworkCore.InMemory` | In-memory SQLite substitute for repository tests |
+
+> **TODO:** Integration tests (CLI end-to-end, real ffmpeg calls) are not yet implemented.
+
+---
+
+## CI
+
+GitHub Actions runs on every push and pull request to `master`/`main`:
+
+```
+.github/workflows/ci.yml
+  restore → build (Release) → test → upload test results (.trx)
 ```
 
 ---
