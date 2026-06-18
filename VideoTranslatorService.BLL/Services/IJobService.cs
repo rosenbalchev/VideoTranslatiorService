@@ -20,4 +20,10 @@ public interface IJobService
         CancellationToken ct = default);
 
     Task<VideoJob?> GetJobAsync(Guid jobId, CancellationToken ct = default);
+
+    /// <summary>
+    /// Returns all jobs that are at a stable intermediate state and can be advanced
+    /// to the next pipeline step, ordered oldest-first.
+    /// </summary>
+    Task<IReadOnlyList<VideoJob>> GetResumableJobsAsync(CancellationToken ct = default);
 }

@@ -29,13 +29,13 @@ public sealed class MediaSeparatorService : IMediaSeparatorService
             throw new InvalidOperationException($"Job {job.Id} has no ProcessingVideoPath set.");
 
         var baseName = Path.GetFileNameWithoutExtension(job.OriginalFileName);
-        var audioPath = Path.Combine(job.ProcessingFolderPath, $"{baseName}_audio.aac");
+        var audioPath = Path.Combine(job.ProcessingFolderPath, $"{baseName}_audio.wav");
         var silentVideoPath = Path.Combine(job.ProcessingFolderPath, $"{baseName}_silent.mp4");
 
         _logger.LogInformation("Extracting audio track from {Source}", job.ProcessingVideoPath);
         await _processRunner.RunAsync(
             ffmpegPath,
-            $"-y -i \"{job.ProcessingVideoPath}\" -vn -acodec copy \"{audioPath}\"",
+            $"-y -i \"{job.ProcessingVideoPath}\" -vn -acodec pcm_s16le \"{audioPath}\"",
             ct);
 
         _logger.LogInformation("Stripping audio from video {Source}", job.ProcessingVideoPath);

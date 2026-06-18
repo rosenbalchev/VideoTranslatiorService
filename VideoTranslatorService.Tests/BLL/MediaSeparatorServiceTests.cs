@@ -51,7 +51,7 @@ public sealed class MediaSeparatorServiceTests
     {
         var (audioPath, _) = await _sut.SeparateAsync(MakeJob());
 
-        Assert.Equal(Path.Combine("/proc", "video_audio.aac"), audioPath);
+        Assert.Equal(Path.Combine("/proc", "video_audio.wav"), audioPath);
     }
 
     [Fact]
@@ -69,7 +69,7 @@ public sealed class MediaSeparatorServiceTests
 
         await _sut.SeparateAsync(job);
 
-        Assert.Equal(Path.Combine("/proc", "video_audio.aac"), job.ExtractedAudioPath);
+        Assert.Equal(Path.Combine("/proc", "video_audio.wav"), job.ExtractedAudioPath);
         Assert.Equal(Path.Combine("/proc", "video_silent.mp4"), job.SilentVideoPath);
     }
 

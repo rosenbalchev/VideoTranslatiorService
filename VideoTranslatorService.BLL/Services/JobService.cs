@@ -48,4 +48,7 @@ public sealed class JobService : IJobService
 
     public Task<VideoJob?> GetJobAsync(Guid jobId, CancellationToken ct = default) =>
         _repo.GetByIdAsync(jobId, ct);
+
+    public Task<IReadOnlyList<VideoJob>> GetResumableJobsAsync(CancellationToken ct = default) =>
+        _repo.GetResumableAsync(ct);
 }

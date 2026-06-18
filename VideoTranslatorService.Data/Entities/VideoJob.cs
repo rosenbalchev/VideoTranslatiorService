@@ -7,17 +7,27 @@ public class VideoJob
     public required string InputFilePath { get; set; }
     public required string ProcessingFolderPath { get; set; }
 
-    // Populated after the file is moved to the processing folder
+    // Step 1 — media separation
     public string? ProcessingVideoPath { get; set; }
-
-    // Populated after media separation (Step 1)
     public string? ExtractedAudioPath { get; set; }
     public string? SilentVideoPath { get; set; }
 
-    // Populated after translation (Step 2 — future)
-    public string? TranslatedAudioPath { get; set; }
+    // Step 2 — SRT subtitle extraction
+    public string? SrtFilePath { get; set; }
 
-    // Populated after merge (Step 3 — future)
+    // Step 3 — voice removal
+    public string? VoiceRemovedAudioPath { get; set; }
+
+    // Step 4 — SRT translation
+    public string? TranslatedSrtFilePath { get; set; }
+
+    // Step 5 — voice synthesis
+    public string? SynthesisedVoicePath { get; set; }
+
+    // Step 6 — audio mix
+    public string? MixedAudioPath { get; set; }
+
+    // Step 7 — final video
     public string? OutputFilePath { get; set; }
 
     public JobState State { get; set; } = JobState.Queued;
