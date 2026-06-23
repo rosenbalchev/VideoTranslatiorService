@@ -119,7 +119,39 @@ public sealed class SrtToAzureTtsService : ISrtToAzureTtsService
                 "Synthesising segment {Seg}/{Total} ({Count} entries, leading silence {Ms} ms)",
                 i + 1, segments.Count, segment.Count, silenceMs);
 
-            chunks.Add(await _engine.SpeakSsmlAsync(ssml, endpointUrl, subscriptionKey, voiceName, ct));
+            var audio = await _engine.SpeakSsmlAsync(ssml, endpointUrl, subscriptionKey, voiceName, ct);
+
+            // Expected wall-clock duration of this segment from its first subtitle start
+            // to its last subtitle end.  We must ensure the audio we emit fills exactly
+            // this window so every subsequent inter-segment silence stays in sync.
+            var expectedMs = segment[^1].EndMs - segment[0].StartMs;
+
+            if (IsValidRiffWav(audio))
+            {
+                chunks.Add(audio);
+
+                // TTS commonly speaks faster than the subtitle's declared duration.
+                // Pad the difference so the next segment starts at the right moment.
+                var actualMs = GetWavDurationMs(audio);
+                var padMs    = expectedMs - actualMs;
+                if (padMs > 50)
+                {
+                    _logger.LogDebug(
+                        "Segment {Seg}/{Total}: TTS {A}ms < expected {E}ms — padding {P}ms to stay in sync",
+                        i + 1, segments.Count, actualMs, expectedMs, padMs);
+                    chunks.Add(MakeSilenceWav(padMs));
+                }
+            }
+            else
+            {
+                // Azure TTS returned empty or malformed audio (e.g. untranslatable text).
+                // Substitute silence for the full expected duration so the timeline stays intact.
+                _logger.LogWarning(
+                    "Segment {Seg}/{Total} returned invalid audio (len={Len}) — substituting {Ms}ms silence",
+                    i + 1, segments.Count, audio.Length, expectedMs);
+                chunks.Add(MakeSilenceWav(Math.Max(expectedMs, 1)));
+            }
+
             curMs = segment[^1].EndMs;
         }
 
@@ -242,6 +274,23 @@ public sealed class SrtToAzureTtsService : ISrtToAzureTtsService
         BitConverter.GetBytes((uint)dataSize).CopyTo(wav, 40);
         // data bytes are already 0 (silence)
         return wav;
+    }
+
+    // Returns true if the byte array looks like a RIFF WAV with a findable "data" chunk.
+    private static bool IsValidRiffWav(byte[] data)
+    {
+        if (data.Length < 12) return false;
+        return data[0] == 'R' && data[1] == 'I' && data[2] == 'F' && data[3] == 'F'
+            && data[8] == 'W' && data[9] == 'A' && data[10] == 'V' && data[11] == 'E';
+    }
+
+    // Returns the duration of a valid WAV in milliseconds by reading the data chunk size.
+    // Assumes 44100 Hz, 16-bit, mono (88200 bytes/sec) — matches MakeSilenceWav and Azure TTS output.
+    private static int GetWavDurationMs(byte[] wav)
+    {
+        var dataOffset = FindPcmDataOffset(wav);
+        var dataSize   = BitConverter.ToUInt32(wav, dataOffset - 4);
+        return (int)(dataSize * 1000L / 88200);
     }
 
     // Finds the byte offset where PCM data begins (past the "data" chunk header).
