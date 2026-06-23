@@ -1,3 +1,5 @@
+using Azure.AI.OpenAI;
+using Azure.Identity;
 using System.CommandLine;
 using System.CommandLine.Parsing;
 using Microsoft.EntityFrameworkCore;
@@ -44,6 +46,67 @@ internal sealed class Program
             DefaultValueFactory = _ => "python"
         };
 
+        var demucsOpt = new Option<string>("--demucs")
+        {
+            Description = "Python executable used to run 'python -m demucs' (must be on PATH or supply full path)",
+            DefaultValueFactory = _ => "python"
+        };
+
+        var azureKeyOpt = new Option<string>("--azure-key")
+        {
+            Required = true,
+            Description = "Azure Cognitive Services subscription key"
+        };
+
+        var azureEndpointOpt = new Option<string>("--azure-endpoint")
+        {
+            Required = true,
+            Description = "Azure Cognitive Services endpoint URL (e.g. https://my-resource.cognitiveservices.azure.com/)"
+        };
+
+        var azureVoiceOpt = new Option<string>("--azure-voice")
+        {
+            Description = "Azure TTS voice name",
+            DefaultValueFactory = _ => "en-US-Ava:DragonHDLatestNeural"
+        };
+
+        var azureLangOpt = new Option<string>("--azure-lang")
+        {
+            Description = "BCP-47 language tag used in the SSML xml:lang attribute",
+            DefaultValueFactory = _ => "en-US"
+        };
+
+        var openAiEndpointOpt = new Option<string>("--openai-endpoint")
+        {
+            Required = true,
+            Description = "Azure AI Services root endpoint URL for GPT (e.g. https://my-resource.services.ai.azure.com/)"
+        };
+
+        var openAiDeploymentOpt = new Option<string>("--openai-deployment")
+        {
+            Description = "Azure OpenAI deployment name used for SRT translation",
+            DefaultValueFactory = _ => "gpt-4o-mini"
+        };
+
+        var targetLangOpt = new Option<string>("--target-lang")
+        {
+            Description = "Target language for SRT translation (e.g. Bulgarian, English)",
+            DefaultValueFactory = _ => "Bulgarian"
+        };
+
+        var outputFolderOpt = new Option<string>("--output-folder")
+        {
+            Description = "Folder where the finished dubbed video files are written",
+            DefaultValueFactory = _ => "output"
+        };
+
+        var venvOpt = new Option<DirectoryInfo?>("--venv")
+        {
+            Description = "Path to a Python virtual environment whose interpreter is used for ALL Python " +
+                          "operations (Whisper, Demucs). Overrides --python and --demucs when provided. " +
+                          "Example: --venv bgtts-env"
+        };
+
         var root = new RootCommand(
             "AI Video Translator — picks up video files and advances them through the translation pipeline");
 
@@ -52,19 +115,42 @@ internal sealed class Program
         root.Add(dbOpt);
         root.Add(ffmpegOpt);
         root.Add(pythonOpt);
+        root.Add(demucsOpt);
+        root.Add(azureKeyOpt);
+        root.Add(azureEndpointOpt);
+        root.Add(azureVoiceOpt);
+        root.Add(azureLangOpt);
+        root.Add(openAiEndpointOpt);
+        root.Add(openAiDeploymentOpt);
+        root.Add(targetLangOpt);
+        root.Add(outputFolderOpt);
+        root.Add(venvOpt);
 
         root.SetAction(async parseResult =>
         {
             var inputFolder      = parseResult.GetValue(inputFolderOpt)!;
             var processingFolder = parseResult.GetValue(processingFolderOpt)!;
             var dbFile           = parseResult.GetValue(dbOpt)!;
-            var pipelineOptions  = new PipelineOptions
+
+            var venv = parseResult.GetValue(venvOpt);
+            var venvPython = venv is not null ? VenvPythonPath(venv.FullName) : null;
+
+            var pipelineOptions = new PipelineOptions
             {
-                FfmpegPath = parseResult.GetValue(ffmpegOpt)!,
-                PythonPath = parseResult.GetValue(pythonOpt)!
+                FfmpegPath                = parseResult.GetValue(ffmpegOpt)!,
+                PythonPath                = venvPython ?? parseResult.GetValue(pythonOpt)!,
+                DemucsPath                = venvPython ?? parseResult.GetValue(demucsOpt)!,
+                AzureSubscriptionKey      = parseResult.GetValue(azureKeyOpt)!,
+                AzureEndpointUrl          = parseResult.GetValue(azureEndpointOpt)!,
+                AzureTtsVoiceName         = parseResult.GetValue(azureVoiceOpt)!,
+                AzureTtsLang              = parseResult.GetValue(azureLangOpt)!,
+                AzureOpenAiEndpoint       = parseResult.GetValue(openAiEndpointOpt)!,
+                AzureOpenAiDeployment     = parseResult.GetValue(openAiDeploymentOpt)!,
+                TranslationTargetLanguage = parseResult.GetValue(targetLangOpt)!,
+                OutputFolderPath          = parseResult.GetValue(outputFolderOpt)!,
             };
 
-            var services = BuildServices(dbFile.FullName);
+            var services = BuildServices(dbFile.FullName, pipelineOptions);
             await using var scope = services.CreateAsyncScope();
             var sp = scope.ServiceProvider;
 
@@ -138,18 +224,36 @@ internal sealed class Program
         return await root.Parse(args).InvokeAsync();
     }
 
-    private static ServiceProvider BuildServices(string dbPath) =>
+    /// <summary>
+    /// Returns the path to the Python executable inside a virtual environment,
+    /// without requiring the venv to be activated first.
+    /// </summary>
+    private static string VenvPythonPath(string venvRoot) =>
+        OperatingSystem.IsWindows()
+            ? Path.Combine(venvRoot, "Scripts", "python.exe")
+            : Path.Combine(venvRoot, "bin", "python");
+
+    private static ServiceProvider BuildServices(string dbPath, PipelineOptions opts) =>
         new ServiceCollection()
             .AddLogging(b => b.AddConsole().SetMinimumLevel(LogLevel.Information))
             .AddDbContext<AppDbContext>(o => o.UseSqlite($"Data Source={dbPath}"))
             .AddScoped<IVideoJobRepository, VideoJobRepository>()
             .AddScoped<IJobService, JobService>()
             .AddScoped<IProcessRunner, DefaultProcessRunner>()
+            .AddScoped<IFileSystem, PhysicalFileSystem>()
             .AddScoped<IMediaSeparatorService, MediaSeparatorService>()
             .AddScoped<ISrtExtractorService, SrtExtractorService>()
-            .AddScoped<IVoiceRemoverService, VoiceRemoverService>()
+            .AddSingleton<IAzureChatEngine>(_ =>
+            {
+                var openAiClient = new AzureOpenAIClient(
+                    new Uri(opts.AzureOpenAiEndpoint),
+                    new DefaultAzureCredential());
+                return new AzureChatEngine(openAiClient.GetChatClient(opts.AzureOpenAiDeployment));
+            })
             .AddScoped<ISrtTranslatorService, SrtTranslatorService>()
-            .AddScoped<IVoiceSynthesiserService, VoiceSynthesiserService>()
+            .AddSingleton<IAzureSpeechEngine, AzureSpeechEngine>()
+            .AddScoped<ISrtToAzureTtsService, SrtToAzureTtsService>()
+            .AddScoped<IVoiceRemoverService, VoiceRemoverService>()
             .AddScoped<IAudioMixerService, AudioMixerService>()
             .AddScoped<IVideoMuxerService, VideoMuxerService>()
             .AddScoped<IPipelineOrchestrator, PipelineOrchestrator>()

@@ -15,7 +15,10 @@ public class VideoJob
     // Step 2 — SRT subtitle extraction
     public string? SrtFilePath { get; set; }
 
-    // Step 3 — voice removal
+    // Step 3 — Azure TTS synthesis
+    public string? AzureTtsAudioPath { get; set; }
+
+    // Step 4 — voice removal
     public string? VoiceRemovedAudioPath { get; set; }
 
     // Step 4 — SRT translation

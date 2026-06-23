@@ -9,5 +9,5 @@ public interface ISrtTranslatorService
     /// Populates <see cref="VideoJob.TranslatedSrtFilePath"/> and transitions state to
     /// <see cref="JobState.SrtTranslated"/>.
     /// </summary>
-    Task TranslateAsync(VideoJob job, CancellationToken ct = default);
+    Task TranslateAsync(VideoJob job, string targetLanguage, CancellationToken ct = default);
 }

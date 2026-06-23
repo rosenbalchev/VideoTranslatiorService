@@ -1,9 +1,55 @@
+using Microsoft.Extensions.Logging;
 using VideoTranslatorService.Data.Entities;
+using VideoTranslatorService.Data.Repositories;
 
 namespace VideoTranslatorService.BLL.Services;
 
 public sealed class AudioMixerService : IAudioMixerService
 {
-    public Task MixAsync(VideoJob job, CancellationToken ct = default) =>
-        throw new StepNotImplementedException(nameof(IAudioMixerService));
+    private readonly IVideoJobRepository _repo;
+    private readonly IProcessRunner _runner;
+    private readonly IFileSystem _fs;
+    private readonly ILogger<AudioMixerService> _logger;
+
+    public AudioMixerService(
+        IVideoJobRepository repo,
+        IProcessRunner runner,
+        IFileSystem fs,
+        ILogger<AudioMixerService> logger)
+    {
+        _repo   = repo;
+        _runner = runner;
+        _fs     = fs;
+        _logger = logger;
+    }
+
+    public async Task MixAsync(VideoJob job, string ffmpegPath = "ffmpeg", CancellationToken ct = default)
+    {
+        if (string.IsNullOrEmpty(job.VoiceRemovedAudioPath))
+            throw new InvalidOperationException($"Job {job.Id} has no VoiceRemovedAudioPath set.");
+        if (string.IsNullOrEmpty(job.AzureTtsAudioPath))
+            throw new InvalidOperationException($"Job {job.Id} has no AzureTtsAudioPath set.");
+
+        var baseName  = Path.GetFileNameWithoutExtension(job.OriginalFileName);
+        var outputWav = Path.Combine(job.ProcessingFolderPath, $"{baseName}_mixed.wav");
+
+        _logger.LogInformation(
+            "Mixing {Bed} + {Voice} → {Out}",
+            job.VoiceRemovedAudioPath, job.AzureTtsAudioPath, outputWav);
+
+        await _runner.RunAsync(
+            ffmpegPath,
+            $"-y -i \"{job.VoiceRemovedAudioPath}\" -i \"{job.AzureTtsAudioPath}\" " +
+            $"-filter_complex \"amix=inputs=2:duration=longest:normalize=0\" -ac 2 \"{outputWav}\"",
+            ct);
+
+        if (!_fs.FileExists(outputWav))
+            throw new FileNotFoundException($"ffmpeg did not produce mixed audio at {outputWav}");
+
+        job.MixedAudioPath = outputWav;
+        job.State          = JobState.MixedNoVoiceWithSyntheticVoice;
+        await _repo.UpdateAsync(job, ct);
+
+        _logger.LogInformation("Mixed audio written to {Path}", outputWav);
+    }
 }

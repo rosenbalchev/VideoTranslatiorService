@@ -9,15 +9,18 @@ public sealed class MediaSeparatorService : IMediaSeparatorService
     private readonly IVideoJobRepository _repo;
     private readonly ILogger<MediaSeparatorService> _logger;
     private readonly IProcessRunner _processRunner;
+    private readonly IFileSystem _fs;
 
     public MediaSeparatorService(
         IVideoJobRepository repo,
         ILogger<MediaSeparatorService> logger,
-        IProcessRunner processRunner)
+        IProcessRunner processRunner,
+        IFileSystem fs)
     {
         _repo = repo;
         _logger = logger;
         _processRunner = processRunner;
+        _fs = fs;
     }
 
     public async Task<(string AudioPath, string SilentVideoPath)> SeparateAsync(
@@ -37,12 +40,16 @@ public sealed class MediaSeparatorService : IMediaSeparatorService
             ffmpegPath,
             $"-y -i \"{job.ProcessingVideoPath}\" -vn -acodec pcm_s16le \"{audioPath}\"",
             ct);
+        if (!_fs.FileExists(audioPath))
+            throw new FileNotFoundException($"ffmpeg did not produce expected audio output: {audioPath}");
 
         _logger.LogInformation("Stripping audio from video {Source}", job.ProcessingVideoPath);
         await _processRunner.RunAsync(
             ffmpegPath,
             $"-y -i \"{job.ProcessingVideoPath}\" -an -vcodec copy \"{silentVideoPath}\"",
             ct);
+        if (!_fs.FileExists(silentVideoPath))
+            throw new FileNotFoundException($"ffmpeg did not produce expected silent video: {silentVideoPath}");
 
         job.ExtractedAudioPath = audioPath;
         job.SilentVideoPath = silentVideoPath;

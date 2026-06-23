@@ -9,5 +9,5 @@ public interface IVoiceRemoverService
     /// Populates <see cref="VideoJob.VoiceRemovedAudioPath"/> and transitions state to
     /// <see cref="JobState.VoiceRemoved"/>.
     /// </summary>
-    Task RemoveAsync(VideoJob job, CancellationToken ct = default);
+    Task RemoveAsync(VideoJob job, string demucsPath = "demucs", CancellationToken ct = default);
 }

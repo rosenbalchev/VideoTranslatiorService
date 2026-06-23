@@ -9,5 +9,5 @@ public interface IVideoMuxerService
     /// Populates <see cref="VideoJob.OutputFilePath"/> and transitions state to
     /// <see cref="JobState.AddedToOriginalVideo"/>.
     /// </summary>
-    Task MuxAsync(VideoJob job, string ffmpegPath, CancellationToken ct = default);
+    Task MuxAsync(VideoJob job, string ffmpegPath, string outputFolder, CancellationToken ct = default);
 }

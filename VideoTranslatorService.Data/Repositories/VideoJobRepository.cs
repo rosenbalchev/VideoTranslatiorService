@@ -31,20 +31,20 @@ public sealed class VideoJobRepository : IVideoJobRepository
         // predecessor before retrying, so it is safe to include both here.
         JobState[] resumable =
         [
-            // stable
+            // stable — ready for the next step
             JobState.Queued,
             JobState.AudioExtracted,
             JobState.SrtExtracted,
-            JobState.VoiceRemoved,
             JobState.SrtTranslated,
-            JobState.VoiceSynthesised,
+            JobState.AzureTtsSynthesised,
+            JobState.VoiceRemoved,
             JobState.MixedNoVoiceWithSyntheticVoice,
-            // in-progress (interrupted)
+            // in-progress (interrupted mid-step — orchestrator resets to stable predecessor)
             JobState.SeparatingMedia,
             JobState.ExtractingSrt,
-            JobState.RemovingVoice,
             JobState.TranslatingSrt,
-            JobState.SynthesisingVoice,
+            JobState.SynthesisingAzureTts,
+            JobState.RemovingVoice,
             JobState.MixingAudio,
             JobState.AddingToVideo,
         ];

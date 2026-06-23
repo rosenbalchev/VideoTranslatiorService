@@ -12,16 +12,20 @@ public sealed class MediaSeparatorServiceTests
 {
     private readonly IVideoJobRepository _repo;
     private readonly IProcessRunner _processRunner;
+    private readonly IFileSystem _fs;
     private readonly MediaSeparatorService _sut;
 
     public MediaSeparatorServiceTests()
     {
         _repo = Substitute.For<IVideoJobRepository>();
         _processRunner = Substitute.For<IProcessRunner>();
+        _fs = Substitute.For<IFileSystem>();
+        _fs.FileExists(Arg.Any<string>()).Returns(true);
         _sut = new MediaSeparatorService(
             _repo,
             NullLogger<MediaSeparatorService>.Instance,
-            _processRunner);
+            _processRunner,
+            _fs);
     }
 
     private static VideoJob MakeJob(string? processingVideoPath = "/proc/video.mp4") => new()
@@ -101,5 +105,37 @@ public sealed class MediaSeparatorServiceTests
 
         await Assert.ThrowsAsync<InvalidOperationException>(
             () => _sut.SeparateAsync(MakeJob()));
+    }
+
+    [Fact]
+    public async Task SeparateAsync_ThrowsWhenAudioOutputFileMissing()
+    {
+        var job = MakeJob();
+        var expectedAudio = Path.Combine("/proc", "video_audio.wav");
+        _fs.FileExists(expectedAudio).Returns(false);
+
+        await Assert.ThrowsAsync<FileNotFoundException>(
+            () => _sut.SeparateAsync(job));
+    }
+
+    [Fact]
+    public async Task SeparateAsync_ThrowsWhenSilentVideoOutputFileMissing()
+    {
+        var job = MakeJob();
+        var expectedVideo = Path.Combine("/proc", "video_silent.mp4");
+        _fs.FileExists(expectedVideo).Returns(false);
+
+        await Assert.ThrowsAsync<FileNotFoundException>(
+            () => _sut.SeparateAsync(job));
+    }
+
+    [Fact]
+    public async Task SeparateAsync_DoesNotUpdateDbWhenOutputFileMissing()
+    {
+        _fs.FileExists(Arg.Any<string>()).Returns(false);
+
+        try { await _sut.SeparateAsync(MakeJob()); } catch (FileNotFoundException) { }
+
+        await _repo.DidNotReceive().UpdateAsync(Arg.Any<VideoJob>(), Arg.Any<CancellationToken>());
     }
 }

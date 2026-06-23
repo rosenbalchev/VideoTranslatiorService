@@ -9,5 +9,5 @@ public interface IAudioMixerService
     /// Populates <see cref="VideoJob.MixedAudioPath"/> and transitions state to
     /// <see cref="JobState.MixedNoVoiceWithSyntheticVoice"/>.
     /// </summary>
-    Task MixAsync(VideoJob job, CancellationToken ct = default);
+    Task MixAsync(VideoJob job, string ffmpegPath = "ffmpeg", CancellationToken ct = default);
 }

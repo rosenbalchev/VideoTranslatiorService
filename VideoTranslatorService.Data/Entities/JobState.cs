@@ -13,15 +13,19 @@ public enum JobState
     ExtractingSrt,
     SrtExtracted,
 
-    // ── Step 3 : voice removal ──────────────────────────────────────────────
-    RemovingVoice,
-    VoiceRemoved,
-
-    // ── Step 4 : SRT translation ─────────────────────────────────────────────
+    // ── Step 3 : SRT translation (GPT-4o-mini) ───────────────────────────────
     TranslatingSrt,
     SrtTranslated,
 
-    // ── Step 5 : voice synthesis ─────────────────────────────────────────────
+    // ── Step 4 : Azure TTS synthesis (translated SRT → WAV) ─────────────────
+    SynthesisingAzureTts,
+    AzureTtsSynthesised,
+
+    // ── Step 5 : voice removal (Demucs) ─────────────────────────────────────
+    RemovingVoice,
+    VoiceRemoved,
+
+    // ── Step 6 (legacy, unused) ──────────────────────────────────────────────
     SynthesisingVoice,
     VoiceSynthesised,
 
@@ -29,7 +33,7 @@ public enum JobState
     MixingAudio,
     MixedNoVoiceWithSyntheticVoice,
 
-    // ── Step 7 : final mux into video ────────────────────────────────────────
+    // ── Step 7 : final mux into video (with embedded subtitles) ─────────────
     AddingToVideo,
     AddedToOriginalVideo,
 

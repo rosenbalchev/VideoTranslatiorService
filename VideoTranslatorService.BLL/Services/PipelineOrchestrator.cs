@@ -8,9 +8,9 @@ public sealed class PipelineOrchestrator : IPipelineOrchestrator
     private readonly IJobService _jobService;
     private readonly IMediaSeparatorService _mediaSeparator;
     private readonly ISrtExtractorService _srtExtractor;
-    private readonly IVoiceRemoverService _voiceRemover;
     private readonly ISrtTranslatorService _srtTranslator;
-    private readonly IVoiceSynthesiserService _voiceSynthesiser;
+    private readonly ISrtToAzureTtsService _azureTts;
+    private readonly IVoiceRemoverService _voiceRemover;
     private readonly IAudioMixerService _audioMixer;
     private readonly IVideoMuxerService _videoMuxer;
     private readonly ILogger<PipelineOrchestrator> _logger;
@@ -19,22 +19,22 @@ public sealed class PipelineOrchestrator : IPipelineOrchestrator
         IJobService jobService,
         IMediaSeparatorService mediaSeparator,
         ISrtExtractorService srtExtractor,
-        IVoiceRemoverService voiceRemover,
         ISrtTranslatorService srtTranslator,
-        IVoiceSynthesiserService voiceSynthesiser,
+        ISrtToAzureTtsService azureTts,
+        IVoiceRemoverService voiceRemover,
         IAudioMixerService audioMixer,
         IVideoMuxerService videoMuxer,
         ILogger<PipelineOrchestrator> logger)
     {
-        _jobService = jobService;
+        _jobService     = jobService;
         _mediaSeparator = mediaSeparator;
-        _srtExtractor = srtExtractor;
-        _voiceRemover = voiceRemover;
-        _srtTranslator = srtTranslator;
-        _voiceSynthesiser = voiceSynthesiser;
-        _audioMixer = audioMixer;
-        _videoMuxer = videoMuxer;
-        _logger = logger;
+        _srtExtractor   = srtExtractor;
+        _srtTranslator  = srtTranslator;
+        _azureTts       = azureTts;
+        _voiceRemover   = voiceRemover;
+        _audioMixer     = audioMixer;
+        _videoMuxer     = videoMuxer;
+        _logger         = logger;
     }
 
     private static bool IsTerminal(JobState state) =>
@@ -44,13 +44,13 @@ public sealed class PipelineOrchestrator : IPipelineOrchestrator
     // Used to reset jobs that were interrupted mid-step (e.g. process crash).
     private static readonly Dictionary<JobState, JobState> StablePredecessor = new()
     {
-        [JobState.SeparatingMedia]  = JobState.Queued,
-        [JobState.ExtractingSrt]    = JobState.AudioExtracted,
-        [JobState.RemovingVoice]    = JobState.SrtExtracted,
-        [JobState.TranslatingSrt]   = JobState.VoiceRemoved,
-        [JobState.SynthesisingVoice]= JobState.SrtTranslated,
-        [JobState.MixingAudio]      = JobState.VoiceSynthesised,
-        [JobState.AddingToVideo]    = JobState.MixedNoVoiceWithSyntheticVoice,
+        [JobState.SeparatingMedia]             = JobState.Queued,
+        [JobState.ExtractingSrt]               = JobState.AudioExtracted,
+        [JobState.TranslatingSrt]              = JobState.SrtExtracted,
+        [JobState.SynthesisingAzureTts]        = JobState.SrtTranslated,
+        [JobState.RemovingVoice]               = JobState.AzureTtsSynthesised,
+        [JobState.MixingAudio]                 = JobState.VoiceRemoved,
+        [JobState.AddingToVideo]               = JobState.MixedNoVoiceWithSyntheticVoice,
     };
 
     public async Task AdvanceAsync(VideoJob job, PipelineOptions options, CancellationToken ct = default)
@@ -93,8 +93,10 @@ public sealed class PipelineOrchestrator : IPipelineOrchestrator
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Job {Id} failed during {State}", job.Id, stateBefore);
-                await _jobService.TransitionStateAsync(job.Id, JobState.Failed, ex.Message, ct);
+                _logger.LogError(ex,
+                    "Job {Id} failed during {State} — resetting to {Stable} so it is retried on the next run",
+                    job.Id, stateBefore, stateBefore);
+                await _jobService.TransitionStateAsync(job.Id, stateBefore, ex.Message, ct);
                 break;
             }
         }
@@ -120,23 +122,39 @@ public sealed class PipelineOrchestrator : IPipelineOrchestrator
                 break;
 
             case JobState.SrtExtracted:
-                await _voiceRemover.RemoveAsync(job, ct);
-                break;
-
-            case JobState.VoiceRemoved:
-                await _srtTranslator.TranslateAsync(job, ct);
+                await _jobService.TransitionStateAsync(job.Id, JobState.TranslatingSrt, ct: ct);
+                var translating = (await _jobService.GetJobAsync(job.Id, ct))!;
+                await _srtTranslator.TranslateAsync(translating, options.TranslationTargetLanguage, ct);
                 break;
 
             case JobState.SrtTranslated:
-                await _voiceSynthesiser.SynthesiseAsync(job, ct);
+                await _jobService.TransitionStateAsync(job.Id, JobState.SynthesisingAzureTts, ct: ct);
+                var ttsJob = (await _jobService.GetJobAsync(job.Id, ct))!;
+                await _azureTts.SynthesiseAsync(
+                    ttsJob,
+                    options.AzureSubscriptionKey,
+                    options.AzureEndpointUrl,
+                    options.AzureTtsVoiceName,
+                    options.AzureTtsLang,
+                    ct);
                 break;
 
-            case JobState.VoiceSynthesised:
-                await _audioMixer.MixAsync(job, ct);
+            case JobState.AzureTtsSynthesised:
+                await _jobService.TransitionStateAsync(job.Id, JobState.RemovingVoice, ct: ct);
+                var removing = (await _jobService.GetJobAsync(job.Id, ct))!;
+                await _voiceRemover.RemoveAsync(removing, options.DemucsPath, ct);
+                break;
+
+            case JobState.VoiceRemoved:
+                await _jobService.TransitionStateAsync(job.Id, JobState.MixingAudio, ct: ct);
+                var mixing = (await _jobService.GetJobAsync(job.Id, ct))!;
+                await _audioMixer.MixAsync(mixing, options.FfmpegPath, ct);
                 break;
 
             case JobState.MixedNoVoiceWithSyntheticVoice:
-                await _videoMuxer.MuxAsync(job, options.FfmpegPath, ct);
+                await _jobService.TransitionStateAsync(job.Id, JobState.AddingToVideo, ct: ct);
+                var muxing = (await _jobService.GetJobAsync(job.Id, ct))!;
+                await _videoMuxer.MuxAsync(muxing, options.FfmpegPath, options.OutputFolderPath, ct);
                 break;
         }
     }

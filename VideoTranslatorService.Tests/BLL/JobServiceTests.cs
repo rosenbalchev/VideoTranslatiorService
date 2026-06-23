@@ -34,16 +34,32 @@ public sealed class JobServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task CreateJobFromFileAsync_MovesFileToProcessingFolder()
+    public async Task CreateJobFromFileAsync_MovesFileToJobSubfolder()
     {
         var source = await CreateTempFileAsync();
         var processingDir = Path.Combine(_tempDir, "processing");
-        _repo.CreateAsync(Arg.Any<VideoJob>()).Returns(c => c.Arg<VideoJob>());
+        VideoJob? captured = null;
+        _repo.CreateAsync(Arg.Do<VideoJob>(j => captured = j)).Returns(c => c.Arg<VideoJob>());
 
         await _sut.CreateJobFromFileAsync(source, processingDir);
 
         Assert.False(File.Exists(source));
-        Assert.True(File.Exists(Path.Combine(processingDir, "video.mp4")));
+        var jobFolder = Path.Combine(processingDir, captured!.Id.ToString("N")[..8]);
+        Assert.True(File.Exists(Path.Combine(jobFolder, "video.mp4")));
+    }
+
+    [Fact]
+    public async Task CreateJobFromFileAsync_SetsProcessingFolderPathToJobSubfolder()
+    {
+        var source = await CreateTempFileAsync();
+        var processingDir = Path.Combine(_tempDir, "processing");
+        VideoJob? captured = null;
+        _repo.CreateAsync(Arg.Do<VideoJob>(j => captured = j)).Returns(c => c.Arg<VideoJob>());
+
+        await _sut.CreateJobFromFileAsync(source, processingDir);
+
+        var expectedFolder = Path.Combine(processingDir, captured!.Id.ToString("N")[..8]);
+        Assert.Equal(expectedFolder, captured.ProcessingFolderPath);
     }
 
     [Fact]
@@ -70,7 +86,8 @@ public sealed class JobServiceTests : IDisposable
 
         await _sut.CreateJobFromFileAsync(source, processingDir);
 
-        Assert.Equal(Path.Combine(processingDir, "video.mp4"), captured!.ProcessingVideoPath);
+        var jobFolder = Path.Combine(processingDir, captured!.Id.ToString("N")[..8]);
+        Assert.Equal(Path.Combine(jobFolder, "video.mp4"), captured.ProcessingVideoPath);
     }
 
     [Fact]

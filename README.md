@@ -37,11 +37,18 @@ VideoTranslatiorService.slnx
 Input folder  ──►  [CreateJob]  ──►  Processing folder (state: Queued)
                        │
                        ▼
-                [SeparatingMedia]  ──►  ffmpeg extracts audio (.aac)
+                [SeparatingMedia]  ──►  ffmpeg extracts audio (_audio.wav)
                                    ──►  ffmpeg strips audio from video (_silent.mp4)
                        │
                        ▼
-                [AudioExtracted]  ──►  ready for translation (upcoming)
+                [ExtractingSrt]  ──►  Whisper transcribes audio → .srt subtitle file
+                       │
+                       ▼
+                [RemovingVoice]  ──►  Demucs separates vocals from music bed
+                                  ──►  no_vocals.wav (music bed used downstream)
+                       │
+                       ▼
+                [VoiceRemoved]  ──►  ready for SRT translation (upcoming)
 ```
 
 ---
@@ -52,7 +59,31 @@ Input folder  ──►  [CreateJob]  ──►  Processing folder (state: Queue
 |-------------|-------|
 | [.NET 10 SDK](https://dotnet.microsoft.com/download) | `net10.0` target |
 | [ffmpeg](https://ffmpeg.org/download.html) | Must be on `PATH` or pass `--ffmpeg <path>` |
+| [Python 3.9+](https://www.python.org/downloads/) | Required for Whisper (SRT extraction) and Demucs |
+| [Demucs](https://github.com/facebookresearch/demucs) | Voice/music separation — see installation below |
 | SQLite | Bundled via `Microsoft.EntityFrameworkCore.Sqlite` — no separate install |
+
+### Installing Demucs
+
+Demucs is Meta's open-source audio source-separation model. It separates vocals from background music using a hybrid Transformer approach (v4 / `htdemucs`).
+
+```bash
+# Install via pip (requires Python 3.9+)
+pip install demucs
+
+# Verify the install
+demucs --version
+```
+
+> **GPU acceleration (recommended for large files):** Install PyTorch with CUDA support first, then install Demucs on top:
+> ```bash
+> pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+> pip install demucs
+> ```
+
+The pipeline runs `demucs --two-stems=vocals` which produces two stems:
+- `vocals.wav` — isolated voice track (discarded)
+- `no_vocals.wav` — music/background bed (used as the base for the translated audio mix)
 
 ---
 
@@ -70,6 +101,8 @@ dotnet run --project VideoTranslatorService.CLI -- \
 # Optional flags
 #   --db path/to/videotranslator.db   (default: videotranslator.db in CWD)
 #   --ffmpeg path/to/ffmpeg.exe       (default: ffmpeg on PATH)
+#   --python path/to/python.exe       (default: python on PATH)
+#   --demucs path/to/demucs.exe       (default: demucs on PATH)
 ```
 
 ---
@@ -92,6 +125,7 @@ dotnet test VideoTranslatiorService.slnx --verbosity normal
 |------|------|----------------|
 | `JobService` | `Tests/BLL/JobServiceTests.cs` | File move, job creation, state transitions, error paths |
 | `MediaSeparatorService` | `Tests/BLL/MediaSeparatorServiceTests.cs` | Path building, ffmpeg invocation count, state update, error propagation |
+| `VoiceRemoverService` | `Tests/BLL/VoiceRemoverServiceTests.cs` | Path building, demucs invocation, `--two-stems=vocals` flag, state update, error propagation |
 | `VideoJobRepository` | `Tests/Data/VideoJobRepositoryTests.cs` | CRUD operations, state filtering, `UpdatedAt` timestamp |
 
 ### Test dependencies
@@ -144,6 +178,7 @@ VideoJobs
 
 | Step | Description |
 |------|-------------|
-| **Step 2 — Translation** | Send extracted audio to Azure AI Foundry Speech-to-Text → translate → Text-to-Speech |
-| **Step 3 — Merge** | Mux translated audio back with silent video using ffmpeg |
-| **Step 4 — Output** | Move finished file to output folder, mark job `Completed` |
+| **Step 4 — SRT translation** | Translate the subtitle file into the target language via Azure AI Foundry |
+| **Step 5 — Voice synthesis** | Convert translated subtitles to speech (Text-to-Speech) |
+| **Step 6 — Audio mix** | Blend synthesised voice with the music bed (`no_vocals.wav`) |
+| **Step 7 — Final mux** | Mux the mixed audio back into the silent video using ffmpeg |

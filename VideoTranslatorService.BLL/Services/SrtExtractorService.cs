@@ -8,15 +8,18 @@ public sealed class SrtExtractorService : ISrtExtractorService
 {
     private readonly IVideoJobRepository _repo;
     private readonly IProcessRunner _processRunner;
+    private readonly IFileSystem _fs;
     private readonly ILogger<SrtExtractorService> _logger;
 
     public SrtExtractorService(
         IVideoJobRepository repo,
         IProcessRunner processRunner,
+        IFileSystem fs,
         ILogger<SrtExtractorService> logger)
     {
         _repo = repo;
         _processRunner = processRunner;
+        _fs = fs;
         _logger = logger;
     }
 
@@ -40,6 +43,8 @@ public sealed class SrtExtractorService : ISrtExtractorService
             pythonPath,
             $"\"{scriptPath}\" \"{job.ExtractedAudioPath}\" \"{srtPath}\"",
             ct);
+        if (!_fs.FileExists(srtPath))
+            throw new FileNotFoundException($"Whisper did not produce expected SRT output: {srtPath}");
 
         job.SrtFilePath = srtPath;
         job.State = JobState.SrtExtracted;
