@@ -138,7 +138,7 @@ public sealed class SrtToAzureTtsServiceTests
         var sut = MakeSut(out _, out var fs, out _);
         await sut.SynthesiseAsync(MakeJob(), "key", "https://ep/");
         await fs.Received(1).WriteAllTextAsync(
-            Arg.Is<string>(p => p.EndsWith("video_azure_tts.ssml")),
+            Arg.Is<string>(p => p.EndsWith("video_translated_azure_tts.ssml")),
             Arg.Any<string>(), Arg.Any<CancellationToken>());
     }
 
@@ -164,7 +164,7 @@ public sealed class SrtToAzureTtsServiceTests
         var sut = MakeSut(out _, out _, out _);
         var job = MakeJob();
         await sut.SynthesiseAsync(job, "key", "https://ep/");
-        Assert.Equal(Path.Combine("/proc", "video_azure_tts.wav"), job.AzureTtsAudioPath);
+        Assert.Equal(Path.Combine("/proc", "video_translated_azure_tts.wav"), job.AzureTtsAudioPath);
     }
 
     [Fact]
@@ -211,28 +211,32 @@ public sealed class SrtToAzureTtsServiceTests
 
     // ── Error handling ────────────────────────────────────────────────────────
 
+    // The retry logic substitutes silence for any entry whose TTS call fails after
+    // MaxTtsRetries attempts, so SynthesiseAsync completes rather than propagating
+    // the engine exception. Tests below verify this "silent fallback" contract.
+
     [Fact]
-    public async Task SynthesiseAsync_ThrowsWhenEngineFails()
+    public async Task SynthesiseAsync_CompletesWhenEngineAlwaysFails()
     {
         var sut = MakeSut(out _, out _, out var engine);
         engine.SpeakSsmlAsync(
                 Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(),
                 Arg.Any<string>(), Arg.Any<CancellationToken>())
             .ThrowsAsync(new InvalidOperationException("Azure TTS cancelled"));
-        await Assert.ThrowsAsync<InvalidOperationException>(
-            () => sut.SynthesiseAsync(MakeJob(), "key", "https://ep/"));
+        // Should not throw — silence is substituted for every failed entry.
+        await sut.SynthesiseAsync(MakeJob(), "key", "https://ep/");
     }
 
     [Fact]
-    public async Task SynthesiseAsync_DoesNotUpdateDbWhenEngineFails()
+    public async Task SynthesiseAsync_StillUpdatesDbWhenEngineAlwaysFails()
     {
         var sut = MakeSut(out var repo, out _, out var engine);
         engine.SpeakSsmlAsync(
                 Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(),
                 Arg.Any<string>(), Arg.Any<CancellationToken>())
             .ThrowsAsync(new InvalidOperationException("Azure TTS cancelled"));
-        try { await sut.SynthesiseAsync(MakeJob(), "key", "https://ep/"); } catch { }
-        await repo.DidNotReceive().UpdateAsync(Arg.Any<VideoJob>(), Arg.Any<CancellationToken>());
+        await sut.SynthesiseAsync(MakeJob(), "key", "https://ep/");
+        await repo.Received(1).UpdateAsync(Arg.Any<VideoJob>(), Arg.Any<CancellationToken>());
     }
 
     // ── SplitIntoSegments unit tests ──────────────────────────────────────────
@@ -443,6 +447,73 @@ public sealed class SrtToAzureTtsServiceTests
         var entries = new List<SrtEntry> { new(500, 2000, "Text") };
         Assert.StartsWith("<?xml",
             SrtToAzureTtsService.BuildSsml(entries, "Voice", "en-US"));
+    }
+
+    // ── SpeechRateFor unit tests ──────────────────────────────────────────────
+
+    [Fact]
+    public void SpeechRateFor_ClampsOverflowToMaxRate()
+    {
+        // Long sentence, tight window → rate clamped to MaxRatePct (never exceed natural speed)
+        var longText = new string('x', 200); // 200 chars at 13 c/s = ~15 384 ms natural
+        var rate = SrtToAzureTtsService.SpeechRateFor(longText, availableMs: 5000);
+        Assert.Equal(SrtToAzureTtsService.MaxRatePct, rate);
+    }
+
+    [Fact]
+    public void SpeechRateFor_ReturnsDefaultRateWhenTextIsShortForWindow()
+    {
+        // Short word, generous window → DefaultRatePct — silence padding fills the rest
+        var rate = SrtToAzureTtsService.SpeechRateFor("Hi", availableMs: 5000);
+        Assert.Equal(SrtToAzureTtsService.DefaultRatePct, rate);
+    }
+
+    [Fact]
+    public void SpeechRateFor_ClampsToMaxRate()
+    {
+        var rate = SrtToAzureTtsService.SpeechRateFor(new string('x', 1000), availableMs: 100);
+        Assert.Equal(SrtToAzureTtsService.MaxRatePct, rate);
+    }
+
+    [Fact]
+    public void SpeechRateFor_ClampsToDefaultRate()
+    {
+        // Even for very short text in a very wide window, we never go below DefaultRatePct.
+        var rate = SrtToAzureTtsService.SpeechRateFor("Hi", availableMs: 60_000);
+        Assert.Equal(SrtToAzureTtsService.DefaultRatePct, rate);
+    }
+
+    [Fact]
+    public void SpeechRateFor_ReturnsDefaultRateForEmptyText()
+    {
+        Assert.Equal(SrtToAzureTtsService.DefaultRatePct, SrtToAzureTtsService.SpeechRateFor("", availableMs: 2000));
+    }
+
+    [Fact]
+    public void SpeechRateFor_ReturnsDefaultRateForZeroWindow()
+    {
+        Assert.Equal(SrtToAzureTtsService.DefaultRatePct, SrtToAzureTtsService.SpeechRateFor("Hello", availableMs: 0));
+    }
+
+    [Fact]
+    public void BuildSsml_OmitsProsodyTagWhenRateIsMaxAndMaxIsNatural()
+    {
+        // Very long text in a short window → rate clamped to MaxRatePct (100%) →
+        // prosody tag is omitted because 100% is the voice's natural speed.
+        var longText = new string('x', 500);
+        var entries  = new List<SrtEntry> { new(0, 1000, longText) };
+        var ssml     = SrtToAzureTtsService.BuildSsml(entries, "Voice", "en-US");
+        Assert.DoesNotContain("<prosody", ssml);
+    }
+
+    [Fact]
+    public void BuildSsml_OmitsProsodyTagWhenRateIsNearNormal()
+    {
+        // ~13 chars in 1000ms → estimated 1000ms → rate ≈ 100% → no prosody tag
+        var text    = new string('x', 13); // 13 chars / 13 c/s = 1000ms
+        var entries = new List<SrtEntry> { new(0, 1000, text) };
+        var ssml    = SrtToAzureTtsService.BuildSsml(entries, "Voice", "en-US");
+        Assert.DoesNotContain("<prosody", ssml);
     }
 
     // ── ConcatenateWav unit tests ─────────────────────────────────────────────

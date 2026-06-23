@@ -64,17 +64,6 @@ internal sealed class Program
             Description = "Azure Cognitive Services endpoint URL (e.g. https://my-resource.cognitiveservices.azure.com/)"
         };
 
-        var azureVoiceOpt = new Option<string>("--azure-voice")
-        {
-            Description = "Azure TTS voice name",
-            DefaultValueFactory = _ => "en-US-Ava:DragonHDLatestNeural"
-        };
-
-        var azureLangOpt = new Option<string>("--azure-lang")
-        {
-            Description = "BCP-47 language tag used in the SSML xml:lang attribute",
-            DefaultValueFactory = _ => "en-US"
-        };
 
         var openAiEndpointOpt = new Option<string>("--openai-endpoint")
         {
@@ -90,7 +79,7 @@ internal sealed class Program
 
         var targetLangOpt = new Option<string>("--target-lang")
         {
-            Description = "Target language for SRT translation (e.g. Bulgarian, English)",
+            Description = "Comma-separated target languages for SRT translation (e.g. \"Bulgarian,English\")",
             DefaultValueFactory = _ => "Bulgarian"
         };
 
@@ -118,8 +107,6 @@ internal sealed class Program
         root.Add(demucsOpt);
         root.Add(azureKeyOpt);
         root.Add(azureEndpointOpt);
-        root.Add(azureVoiceOpt);
-        root.Add(azureLangOpt);
         root.Add(openAiEndpointOpt);
         root.Add(openAiDeploymentOpt);
         root.Add(targetLangOpt);
@@ -142,11 +129,10 @@ internal sealed class Program
                 DemucsPath                = venvPython ?? parseResult.GetValue(demucsOpt)!,
                 AzureSubscriptionKey      = parseResult.GetValue(azureKeyOpt)!,
                 AzureEndpointUrl          = parseResult.GetValue(azureEndpointOpt)!,
-                AzureTtsVoiceName         = parseResult.GetValue(azureVoiceOpt)!,
-                AzureTtsLang              = parseResult.GetValue(azureLangOpt)!,
                 AzureOpenAiEndpoint       = parseResult.GetValue(openAiEndpointOpt)!,
                 AzureOpenAiDeployment     = parseResult.GetValue(openAiDeploymentOpt)!,
-                TranslationTargetLanguage = parseResult.GetValue(targetLangOpt)!,
+                TranslationTargetLanguages = parseResult.GetValue(targetLangOpt)!
+                    .Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries),
                 OutputFolderPath          = parseResult.GetValue(outputFolderOpt)!,
             };
 
@@ -256,6 +242,6 @@ internal sealed class Program
             .AddScoped<IVoiceRemoverService, VoiceRemoverService>()
             .AddScoped<IAudioMixerService, AudioMixerService>()
             .AddScoped<IVideoMuxerService, VideoMuxerService>()
-            .AddScoped<IPipelineOrchestrator, PipelineOrchestrator>()
+            .AddScoped<IPipelineOrchestrator, PipelineOrchestrator>()  // IVideoJobRepository injected alongside IJobService
             .BuildServiceProvider();
 }

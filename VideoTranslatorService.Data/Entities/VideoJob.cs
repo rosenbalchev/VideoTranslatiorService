@@ -30,6 +30,9 @@ public class VideoJob
     // Step 6 — audio mix
     public string? MixedAudioPath { get; set; }
 
+    // JSON array of LanguageResult — set after all languages are translated/synthesised/mixed
+    public string? LanguageResultsJson { get; set; }
+
     // Step 7 — final video
     public string? OutputFilePath { get; set; }
 

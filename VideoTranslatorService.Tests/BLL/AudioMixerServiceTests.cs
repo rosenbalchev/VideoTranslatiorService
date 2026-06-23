@@ -29,14 +29,16 @@ public sealed class AudioMixerServiceTests
     }
 
     private static VideoJob MakeJob(
-        string? voiceRemovedPath = "/proc/no_vocals.flac",
-        string? ttsPath          = "/proc/video_azure_tts.wav") => new()
+        string? voiceRemovedPath  = "/proc/no_vocals.flac",
+        string? ttsPath           = "/proc/video_azure_tts.wav",
+        string? translatedSrtPath = "/proc/video_translated_Bulgarian.srt") => new()
     {
         OriginalFileName      = "video.mp4",
         InputFilePath         = "/input/video.mp4",
         ProcessingFolderPath  = "/proc",
         VoiceRemovedAudioPath = voiceRemovedPath,
         AzureTtsAudioPath     = ttsPath,
+        TranslatedSrtFilePath = translatedSrtPath,
     };
 
     // ── Guard checks ─────────────────────────────────────────────────────────
@@ -92,7 +94,7 @@ public sealed class AudioMixerServiceTests
         await _sut.MixAsync(MakeJob());
         await _runner.Received(1).RunAsync(
             Arg.Any<string>(),
-            Arg.Is<string>(a => a.Contains("video_mixed.wav")),
+            Arg.Is<string>(a => a.Contains("video_translated_Bulgarian_mixed.wav")),
             Arg.Any<CancellationToken>());
     }
 
@@ -119,7 +121,7 @@ public sealed class AudioMixerServiceTests
     {
         var job = MakeJob();
         await _sut.MixAsync(job);
-        Assert.Contains("video_mixed.wav", job.MixedAudioPath);
+        Assert.Contains("video_translated_Bulgarian_mixed.wav", job.MixedAudioPath);
     }
 
     [Fact]

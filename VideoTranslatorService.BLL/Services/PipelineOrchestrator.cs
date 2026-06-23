@@ -1,63 +1,102 @@
+using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using VideoTranslatorService.Data.Entities;
+using VideoTranslatorService.Data.Repositories;
 
 namespace VideoTranslatorService.BLL.Services;
 
 public sealed class PipelineOrchestrator : IPipelineOrchestrator
 {
     private readonly IJobService _jobService;
+    private readonly IVideoJobRepository _repo;
     private readonly IMediaSeparatorService _mediaSeparator;
     private readonly ISrtExtractorService _srtExtractor;
+    private readonly IVoiceRemoverService _voiceRemover;
     private readonly ISrtTranslatorService _srtTranslator;
     private readonly ISrtToAzureTtsService _azureTts;
-    private readonly IVoiceRemoverService _voiceRemover;
     private readonly IAudioMixerService _audioMixer;
     private readonly IVideoMuxerService _videoMuxer;
     private readonly ILogger<PipelineOrchestrator> _logger;
 
     public PipelineOrchestrator(
         IJobService jobService,
+        IVideoJobRepository repo,
         IMediaSeparatorService mediaSeparator,
         ISrtExtractorService srtExtractor,
+        IVoiceRemoverService voiceRemover,
         ISrtTranslatorService srtTranslator,
         ISrtToAzureTtsService azureTts,
-        IVoiceRemoverService voiceRemover,
         IAudioMixerService audioMixer,
         IVideoMuxerService videoMuxer,
         ILogger<PipelineOrchestrator> logger)
     {
         _jobService     = jobService;
+        _repo           = repo;
         _mediaSeparator = mediaSeparator;
         _srtExtractor   = srtExtractor;
+        _voiceRemover   = voiceRemover;
         _srtTranslator  = srtTranslator;
         _azureTts       = azureTts;
-        _voiceRemover   = voiceRemover;
         _audioMixer     = audioMixer;
         _videoMuxer     = videoMuxer;
         _logger         = logger;
     }
 
+    // Maps display language names (as passed to --target-lang) to Azure TTS voice + BCP-47 tag.
+    // Add entries here to support additional languages.
+    private static readonly Dictionary<string, (string VoiceName, string Lang)> VoiceMap =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Bulgarian"]  = ("bg-BG-BorislavNeural",  "bg-BG"),
+            ["Chinese"]    = ("zh-CN-XiaoxiaoNeural",  "zh-CN"),
+            ["Croatian"]   = ("hr-HR-SreckoNeural",    "hr-HR"),
+            ["Czech"]      = ("cs-CZ-VlastaNeural",    "cs-CZ"),
+            ["Danish"]     = ("da-DK-ChristelNeural",  "da-DK"),
+            ["Dutch"]      = ("nl-NL-ColetteNeural",   "nl-NL"),
+            ["English"]    = ("en-US-AvaNeural",       "en-US"),
+            ["Finnish"]    = ("fi-FI-NooraNeural",     "fi-FI"),
+            ["French"]     = ("fr-FR-DeniseNeural",    "fr-FR"),
+            ["German"]     = ("de-DE-KatjaNeural",     "de-DE"),
+            ["Greek"]      = ("el-GR-AthinaNeural",    "el-GR"),
+            ["Hungarian"]  = ("hu-HU-NoemiNeural",     "hu-HU"),
+            ["Italian"]    = ("it-IT-ElsaNeural",      "it-IT"),
+            ["Japanese"]   = ("ja-JP-NanamiNeural",    "ja-JP"),
+            ["Korean"]     = ("ko-KR-SunHiNeural",     "ko-KR"),
+            ["Norwegian"]  = ("nb-NO-PernilleNeural",  "nb-NO"),
+            ["Polish"]     = ("pl-PL-ZofiaNeural",     "pl-PL"),
+            ["Portuguese"] = ("pt-BR-FranciscaNeural", "pt-BR"),
+            ["Romanian"]   = ("ro-RO-AlinaNeural",     "ro-RO"),
+            ["Russian"]    = ("ru-RU-SvetlanaNeural",  "ru-RU"),
+            ["Slovak"]     = ("sk-SK-ViktoriaNeural",  "sk-SK"),
+            ["Slovenian"]  = ("sl-SI-PetraNeural",     "sl-SI"),
+            ["Spanish"]    = ("es-ES-ElviraNeural",    "es-ES"),
+            ["Swedish"]    = ("sv-SE-SofieNeural",     "sv-SE"),
+            ["Turkish"]    = ("tr-TR-EmelNeural",      "tr-TR"),
+            ["Ukrainian"]  = ("uk-UA-PolinaNeural",    "uk-UA"),
+        };
+
     private static bool IsTerminal(JobState state) =>
         state is JobState.AddedToOriginalVideo or JobState.Completed or JobState.Failed;
 
     // Maps each in-progress state back to the stable state that precedes it.
-    // Used to reset jobs that were interrupted mid-step (e.g. process crash).
+    // States inside the multi-language loop (TranslatingSrt..MixingAudio) all reset to
+    // VoiceRemoved so the entire language loop is retried cleanly.
     private static readonly Dictionary<JobState, JobState> StablePredecessor = new()
     {
-        [JobState.SeparatingMedia]             = JobState.Queued,
-        [JobState.ExtractingSrt]               = JobState.AudioExtracted,
-        [JobState.TranslatingSrt]              = JobState.SrtExtracted,
-        [JobState.SynthesisingAzureTts]        = JobState.SrtTranslated,
-        [JobState.RemovingVoice]               = JobState.AzureTtsSynthesised,
-        [JobState.MixingAudio]                 = JobState.VoiceRemoved,
-        [JobState.AddingToVideo]               = JobState.MixedNoVoiceWithSyntheticVoice,
+        [JobState.SeparatingMedia]      = JobState.Queued,
+        [JobState.ExtractingSrt]        = JobState.AudioExtracted,
+        [JobState.RemovingVoice]        = JobState.SrtExtracted,
+        // Multi-language loop — any crash inside resets to VoiceRemoved
+        [JobState.TranslatingSrt]       = JobState.VoiceRemoved,
+        [JobState.SrtTranslated]        = JobState.VoiceRemoved,
+        [JobState.SynthesisingAzureTts] = JobState.VoiceRemoved,
+        [JobState.AzureTtsSynthesised]  = JobState.VoiceRemoved,
+        [JobState.MixingAudio]          = JobState.VoiceRemoved,
+        [JobState.AddingToVideo]        = JobState.MixedNoVoiceWithSyntheticVoice,
     };
 
     public async Task AdvanceAsync(VideoJob job, PipelineOptions options, CancellationToken ct = default)
     {
-        // If the service was restarted while a step was running, the job will be
-        // stuck in an in-progress state. Reset it to the stable predecessor so the
-        // step is retried cleanly from the beginning.
         if (StablePredecessor.TryGetValue(job.State, out var stableState))
         {
             _logger.LogWarning(
@@ -94,8 +133,8 @@ public sealed class PipelineOrchestrator : IPipelineOrchestrator
             catch (Exception ex)
             {
                 _logger.LogError(ex,
-                    "Job {Id} failed during {State} — resetting to {Stable} so it is retried on the next run",
-                    job.Id, stateBefore, stateBefore);
+                    "Job {Id} failed during {State}",
+                    job.Id, stateBefore);
                 await _jobService.TransitionStateAsync(job.Id, stateBefore, ex.Message, ct);
                 break;
             }
@@ -122,39 +161,82 @@ public sealed class PipelineOrchestrator : IPipelineOrchestrator
                 break;
 
             case JobState.SrtExtracted:
-                await _jobService.TransitionStateAsync(job.Id, JobState.TranslatingSrt, ct: ct);
-                var translating = (await _jobService.GetJobAsync(job.Id, ct))!;
-                await _srtTranslator.TranslateAsync(translating, options.TranslationTargetLanguage, ct);
-                break;
-
-            case JobState.SrtTranslated:
-                await _jobService.TransitionStateAsync(job.Id, JobState.SynthesisingAzureTts, ct: ct);
-                var ttsJob = (await _jobService.GetJobAsync(job.Id, ct))!;
-                await _azureTts.SynthesiseAsync(
-                    ttsJob,
-                    options.AzureSubscriptionKey,
-                    options.AzureEndpointUrl,
-                    options.AzureTtsVoiceName,
-                    options.AzureTtsLang,
-                    ct);
-                break;
-
-            case JobState.AzureTtsSynthesised:
+                // Voice removal runs here — it only needs the extracted audio and
+                // is independent of subtitles, so it runs once before any language work.
                 await _jobService.TransitionStateAsync(job.Id, JobState.RemovingVoice, ct: ct);
                 var removing = (await _jobService.GetJobAsync(job.Id, ct))!;
                 await _voiceRemover.RemoveAsync(removing, options.DemucsPath, ct);
                 break;
 
             case JobState.VoiceRemoved:
-                await _jobService.TransitionStateAsync(job.Id, JobState.MixingAudio, ct: ct);
-                var mixing = (await _jobService.GetJobAsync(job.Id, ct))!;
-                await _audioMixer.MixAsync(mixing, options.FfmpegPath, ct);
+                // Mark start of the multi-language loop.
+                await _jobService.TransitionStateAsync(job.Id, JobState.TranslatingSrt, ct: ct);
+                var working = (await _jobService.GetJobAsync(job.Id, ct))!;
+
+                // Resume from any previously completed languages so that stopping and
+                // restarting mid-loop does not redo already-finished work.
+                var results = string.IsNullOrEmpty(working.LanguageResultsJson)
+                    ? new List<LanguageResult>(options.TranslationTargetLanguages.Length)
+                    : JsonSerializer.Deserialize<List<LanguageResult>>(working.LanguageResultsJson)!;
+
+                var done = results.Select(r => r.Language)
+                                  .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+                foreach (var lang in options.TranslationTargetLanguages)
+                {
+                    if (done.Contains(lang))
+                    {
+                        _logger.LogInformation("Language {Lang} already completed — skipping", lang);
+                        continue;
+                    }
+
+                    if (!VoiceMap.TryGetValue(lang, out var voice))
+                        throw new InvalidOperationException(
+                            $"No Azure TTS voice configured for language '{lang}'. " +
+                            $"Add an entry to PipelineOrchestrator.VoiceMap.");
+
+                    _logger.LogInformation("Processing language: {Language} (voice: {Voice})", lang, voice.VoiceName);
+
+                    await _srtTranslator.TranslateAsync(working, lang, ct);
+                    var translatedPath = working.TranslatedSrtFilePath!;
+
+                    await _azureTts.SynthesiseAsync(
+                        working,
+                        options.AzureSubscriptionKey,
+                        options.AzureEndpointUrl,
+                        voice.VoiceName,
+                        voice.Lang,
+                        ct);
+
+                    await _audioMixer.MixAsync(working, options.FfmpegPath, ct);
+
+                    results.Add(new LanguageResult(lang, working.MixedAudioPath!, translatedPath));
+
+                    // Persist progress after every language. AudioMixerService already wrote
+                    // MixedNoVoiceWithSyntheticVoice; override state back to TranslatingSrt
+                    // until the final language is done so crash recovery (StablePredecessor
+                    // TranslatingSrt → VoiceRemoved) restores the job correctly and the loop
+                    // skips already-completed languages on the next run.
+                    var allDone = options.TranslationTargetLanguages
+                        .All(l => results.Any(r => string.Equals(r.Language, l, StringComparison.OrdinalIgnoreCase)));
+
+                    working.LanguageResultsJson = JsonSerializer.Serialize(results);
+                    working.State               = allDone
+                        ? JobState.MixedNoVoiceWithSyntheticVoice
+                        : JobState.TranslatingSrt;
+                    await _repo.UpdateAsync(working, ct);
+                }
                 break;
 
             case JobState.MixedNoVoiceWithSyntheticVoice:
                 await _jobService.TransitionStateAsync(job.Id, JobState.AddingToVideo, ct: ct);
                 var muxing = (await _jobService.GetJobAsync(job.Id, ct))!;
-                await _videoMuxer.MuxAsync(muxing, options.FfmpegPath, options.OutputFolderPath, ct);
+
+                var languageResults = JsonSerializer.Deserialize<List<LanguageResult>>(
+                    muxing.LanguageResultsJson ?? "[]")!;
+
+                await _videoMuxer.MuxAsync(
+                    muxing, options.FfmpegPath, options.OutputFolderPath, languageResults, ct);
                 break;
         }
     }

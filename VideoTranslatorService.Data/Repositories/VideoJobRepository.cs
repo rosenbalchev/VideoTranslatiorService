@@ -35,16 +35,17 @@ public sealed class VideoJobRepository : IVideoJobRepository
             JobState.Queued,
             JobState.AudioExtracted,
             JobState.SrtExtracted,
-            JobState.SrtTranslated,
-            JobState.AzureTtsSynthesised,
             JobState.VoiceRemoved,
             JobState.MixedNoVoiceWithSyntheticVoice,
-            // in-progress (interrupted mid-step — orchestrator resets to stable predecessor)
+            // in-progress (orchestrator resets these to their stable predecessor and retries)
             JobState.SeparatingMedia,
             JobState.ExtractingSrt,
-            JobState.TranslatingSrt,
-            JobState.SynthesisingAzureTts,
             JobState.RemovingVoice,
+            // Inside the multi-language loop — all reset to VoiceRemoved
+            JobState.TranslatingSrt,
+            JobState.SrtTranslated,
+            JobState.SynthesisingAzureTts,
+            JobState.AzureTtsSynthesised,
             JobState.MixingAudio,
             JobState.AddingToVideo,
         ];
