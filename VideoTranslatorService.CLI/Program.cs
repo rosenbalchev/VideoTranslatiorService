@@ -96,6 +96,11 @@ internal sealed class Program
                           "Example: --venv bgtts-env"
         };
 
+        var femaleOpt = new Option<bool>("--female")
+        {
+            Description = "Use a female Azure TTS voice instead of the default male voice"
+        };
+
         var root = new RootCommand(
             "AI Video Translator — picks up video files and advances them through the translation pipeline");
 
@@ -112,6 +117,7 @@ internal sealed class Program
         root.Add(targetLangOpt);
         root.Add(outputFolderOpt);
         root.Add(venvOpt);
+        root.Add(femaleOpt);
 
         root.SetAction(async parseResult =>
         {
@@ -134,6 +140,7 @@ internal sealed class Program
                 TranslationTargetLanguages = parseResult.GetValue(targetLangOpt)!
                     .Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries),
                 OutputFolderPath          = parseResult.GetValue(outputFolderOpt)!,
+                UseFemaleVoice            = parseResult.GetValue(femaleOpt),
             };
 
             var services = BuildServices(dbFile.FullName, pipelineOptions);

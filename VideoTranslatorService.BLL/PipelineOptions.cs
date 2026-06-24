@@ -11,4 +11,5 @@ public sealed record PipelineOptions
     public string AzureOpenAiDeployment { get; init; } = "gpt-4o-mini";
     public string[] TranslationTargetLanguages { get; init; } = ["Bulgarian"];
     public string OutputFolderPath { get; init; } = "output";
+    public bool UseFemaleVoice { get; init; } = false;
 }

@@ -42,37 +42,38 @@ public sealed class PipelineOrchestrator : IPipelineOrchestrator
         _logger         = logger;
     }
 
-    // Maps display language names (as passed to --target-lang) to Azure TTS voice + BCP-47 tag.
-    // Add entries here to support additional languages.
-    private static readonly Dictionary<string, (string VoiceName, string Lang)> VoiceMap =
+    // Maps display language names (as passed to --target-lang) to Azure TTS voices + BCP-47 tag.
+    // Each entry has a male and female Neural voice. Add entries here to support additional languages.
+    // Voice names sourced from: https://learn.microsoft.com/azure/ai-services/speech-service/language-support?tabs=tts
+    private static readonly Dictionary<string, (string MaleVoice, string FemaleVoice, string Lang)> VoiceMap =
         new(StringComparer.OrdinalIgnoreCase)
         {
-            ["Bulgarian"]  = ("bg-BG-BorislavNeural",  "bg-BG"),
-            ["Chinese"]    = ("zh-CN-XiaoxiaoNeural",  "zh-CN"),
-            ["Croatian"]   = ("hr-HR-SreckoNeural",    "hr-HR"),
-            ["Czech"]      = ("cs-CZ-VlastaNeural",    "cs-CZ"),
-            ["Danish"]     = ("da-DK-ChristelNeural",  "da-DK"),
-            ["Dutch"]      = ("nl-NL-ColetteNeural",   "nl-NL"),
-            ["English"]    = ("en-US-AvaNeural",       "en-US"),
-            ["Finnish"]    = ("fi-FI-NooraNeural",     "fi-FI"),
-            ["French"]     = ("fr-FR-DeniseNeural",    "fr-FR"),
-            ["German"]     = ("de-DE-KatjaNeural",     "de-DE"),
-            ["Greek"]      = ("el-GR-AthinaNeural",    "el-GR"),
-            ["Hungarian"]  = ("hu-HU-NoemiNeural",     "hu-HU"),
-            ["Italian"]    = ("it-IT-ElsaNeural",      "it-IT"),
-            ["Japanese"]   = ("ja-JP-NanamiNeural",    "ja-JP"),
-            ["Korean"]     = ("ko-KR-SunHiNeural",     "ko-KR"),
-            ["Norwegian"]  = ("nb-NO-PernilleNeural",  "nb-NO"),
-            ["Polish"]     = ("pl-PL-ZofiaNeural",     "pl-PL"),
-            ["Portuguese"] = ("pt-BR-FranciscaNeural", "pt-BR"),
-            ["Romanian"]   = ("ro-RO-AlinaNeural",     "ro-RO"),
-            ["Russian"]    = ("ru-RU-SvetlanaNeural",  "ru-RU"),
-            ["Slovak"]     = ("sk-SK-ViktoriaNeural",  "sk-SK"),
-            ["Slovenian"]  = ("sl-SI-PetraNeural",     "sl-SI"),
-            ["Spanish"]    = ("es-ES-ElviraNeural",    "es-ES"),
-            ["Swedish"]    = ("sv-SE-SofieNeural",     "sv-SE"),
-            ["Turkish"]    = ("tr-TR-EmelNeural",      "tr-TR"),
-            ["Ukrainian"]  = ("uk-UA-PolinaNeural",    "uk-UA"),
+            ["Bulgarian"]  = ("bg-BG-BorislavNeural",  "bg-BG-KalinaNeural",    "bg-BG"),
+            ["Chinese"]    = ("zh-CN-YunxiNeural",     "zh-CN-XiaoxiaoNeural",  "zh-CN"),
+            ["Croatian"]   = ("hr-HR-SreckoNeural",    "hr-HR-GabrijelaNeural", "hr-HR"),
+            ["Czech"]      = ("cs-CZ-AntoninNeural",   "cs-CZ-VlastaNeural",    "cs-CZ"),
+            ["Danish"]     = ("da-DK-JeppeNeural",     "da-DK-ChristelNeural",  "da-DK"),
+            ["Dutch"]      = ("nl-NL-MaartenNeural",   "nl-NL-ColetteNeural",   "nl-NL"),
+            ["English"]    = ("en-US-GuyNeural",       "en-US-AvaNeural",       "en-US"),
+            ["Finnish"]    = ("fi-FI-HarriNeural",     "fi-FI-NooraNeural",     "fi-FI"),
+            ["French"]     = ("fr-FR-HenriNeural",     "fr-FR-DeniseNeural",    "fr-FR"),
+            ["German"]     = ("de-DE-ConradNeural",    "de-DE-KatjaNeural",     "de-DE"),
+            ["Greek"]      = ("el-GR-NestorasNeural",  "el-GR-AthinaNeural",    "el-GR"),
+            ["Hungarian"]  = ("hu-HU-TamasNeural",     "hu-HU-NoemiNeural",     "hu-HU"),
+            ["Italian"]    = ("it-IT-DiegoNeural",     "it-IT-ElsaNeural",      "it-IT"),
+            ["Japanese"]   = ("ja-JP-KeitaNeural",     "ja-JP-NanamiNeural",    "ja-JP"),
+            ["Korean"]     = ("ko-KR-InJoonNeural",    "ko-KR-SunHiNeural",     "ko-KR"),
+            ["Norwegian"]  = ("nb-NO-FinnNeural",      "nb-NO-PernilleNeural",  "nb-NO"),
+            ["Polish"]     = ("pl-PL-MarekNeural",     "pl-PL-ZofiaNeural",     "pl-PL"),
+            ["Portuguese"] = ("pt-BR-AntonioNeural",   "pt-BR-FranciscaNeural", "pt-BR"),
+            ["Romanian"]   = ("ro-RO-EmilNeural",      "ro-RO-AlinaNeural",     "ro-RO"),
+            ["Russian"]    = ("ru-RU-DmitryNeural",    "ru-RU-SvetlanaNeural",  "ru-RU"),
+            ["Slovak"]     = ("sk-SK-LukasNeural",     "sk-SK-ViktoriaNeural",  "sk-SK"),
+            ["Slovenian"]  = ("sl-SI-RokNeural",       "sl-SI-PetraNeural",     "sl-SI"),
+            ["Spanish"]    = ("es-ES-AlvaroNeural",    "es-ES-ElviraNeural",    "es-ES"),
+            ["Swedish"]    = ("sv-SE-MattiasNeural",   "sv-SE-SofieNeural",     "sv-SE"),
+            ["Turkish"]    = ("tr-TR-AhmetNeural",     "tr-TR-EmelNeural",      "tr-TR"),
+            ["Ukrainian"]  = ("uk-UA-OstapNeural",     "uk-UA-PolinaNeural",    "uk-UA"),
         };
 
     private static bool IsTerminal(JobState state) =>
@@ -195,7 +196,9 @@ public sealed class PipelineOrchestrator : IPipelineOrchestrator
                             $"No Azure TTS voice configured for language '{lang}'. " +
                             $"Add an entry to PipelineOrchestrator.VoiceMap.");
 
-                    _logger.LogInformation("Processing language: {Language} (voice: {Voice})", lang, voice.VoiceName);
+                    var voiceName = options.UseFemaleVoice ? voice.FemaleVoice : voice.MaleVoice;
+
+                    _logger.LogInformation("Processing language: {Language} (voice: {Voice})", lang, voiceName);
 
                     await _srtTranslator.TranslateAsync(working, lang, ct);
                     var translatedPath = working.TranslatedSrtFilePath!;
@@ -204,7 +207,7 @@ public sealed class PipelineOrchestrator : IPipelineOrchestrator
                         working,
                         options.AzureSubscriptionKey,
                         options.AzureEndpointUrl,
-                        voice.VoiceName,
+                        voiceName,
                         voice.Lang,
                         ct);
 
