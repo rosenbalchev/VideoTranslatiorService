@@ -31,8 +31,10 @@ echo [3/5] Upgrading pip...
 python -m pip install --upgrade pip --quiet
 
 echo [4/5] Installing PyTorch ^(CPU^) + Demucs...
-pip install torch torchvision torchaudio torchcodec
+pip install torch torchvision torchaudio
 if errorlevel 1 ( echo ERROR: Failed to install PyTorch. & exit /b 1 )
+pip install torchcodec
+if errorlevel 1 ( echo   WARNING: torchcodec not available on this platform. If Demucs fails with ImportError, install manually. )
 pip install demucs
 if errorlevel 1 ( echo ERROR: Failed to install Demucs. & exit /b 1 )
 
