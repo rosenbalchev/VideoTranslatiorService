@@ -36,9 +36,9 @@ if errorlevel 1 ( echo ERROR: Failed to install PyTorch. & exit /b 1 )
 pip install demucs
 if errorlevel 1 ( echo ERROR: Failed to install Demucs. & exit /b 1 )
 
-echo [5/5] Installing Whisper...
-pip install openai-whisper
-if errorlevel 1 ( echo ERROR: Failed to install Whisper. & exit /b 1 )
+echo [5/5] Installing faster-whisper...
+pip install faster-whisper
+if errorlevel 1 ( echo ERROR: Failed to install faster-whisper. & exit /b 1 )
 
 echo.
 echo ============================================================
@@ -47,7 +47,7 @@ echo ============================================================
 echo.
 echo  Verify the installation:
 echo    bgtts-env\Scripts\activate
-echo    python -c "import whisper; print('Whisper OK')"
+echo    python -c "import faster_whisper; print('faster-whisper OK')"
 echo    python -c "import torch; print('PyTorch OK')"
 echo    python -c "import demucs; print('Demucs OK')"
 echo.

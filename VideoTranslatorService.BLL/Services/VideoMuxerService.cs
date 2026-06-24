@@ -52,6 +52,7 @@ public sealed class VideoMuxerService : IVideoMuxerService
 
         var args = BuildFfmpegArgs(job, languageResults, subtitleCodec, outputPath);
 
+        _logger.LogInformation("ffmpeg args: {Args}", args);
         await _runner.RunAsync(ffmpegPath, args, ct);
 
         if (!_fs.FileExists(outputPath))

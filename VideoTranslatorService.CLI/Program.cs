@@ -139,7 +139,7 @@ internal sealed class Program
                 AzureOpenAiDeployment     = parseResult.GetValue(openAiDeploymentOpt)!,
                 TranslationTargetLanguages = parseResult.GetValue(targetLangOpt)!
                     .Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries),
-                OutputFolderPath          = parseResult.GetValue(outputFolderOpt)!,
+                OutputFolderPath          = Path.GetFullPath(parseResult.GetValue(outputFolderOpt)!),
                 UseFemaleVoice            = parseResult.GetValue(femaleOpt),
             };
 
