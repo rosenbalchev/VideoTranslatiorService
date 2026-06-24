@@ -28,7 +28,7 @@ python -m pip install --upgrade pip --quiet
 echo [4/5] Installing PyTorch ^(CUDA 12.8^) + Demucs...
 echo        ^(This can take several minutes - PyTorch is a large download^)
 echo        ^(PyTorch is installed BEFORE Whisper so pip uses the CUDA build^)
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+pip install torch torchvision torchaudio torchcodec --index-url https://download.pytorch.org/whl/cu128
 if errorlevel 1 ( echo ERROR: Failed to install PyTorch. & exit /b 1 )
 pip install demucs
 if errorlevel 1 ( echo ERROR: Failed to install Demucs. & exit /b 1 )
