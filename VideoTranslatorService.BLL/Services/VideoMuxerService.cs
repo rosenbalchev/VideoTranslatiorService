@@ -41,28 +41,49 @@ public sealed class VideoMuxerService : IVideoMuxerService
             throw new InvalidOperationException($"Job {job.Id} has no SrtFilePath set.");
 
         Directory.CreateDirectory(outputFolder);
-        var outputPath = Path.Combine(outputFolder, job.OriginalFileName);
 
         var ext           = Path.GetExtension(job.OriginalFileName).ToLowerInvariant();
+        var baseName      = Path.GetFileNameWithoutExtension(job.OriginalFileName);
         var subtitleCodec = ext is ".mkv" ? "srt" : "mov_text";
+
+        // ── Multi-audio master (all languages + original) ────────────────────
+        var multiAudioPath = Path.Combine(outputFolder, $"{baseName}_multiAudio{ext}");
 
         _logger.LogInformation(
             "Muxing {Video} + original audio + {N} language track(s) → {Out}",
-            job.SilentVideoPath, languageResults.Count, outputPath);
+            job.SilentVideoPath, languageResults.Count, multiAudioPath);
 
-        var args = BuildFfmpegArgs(job, languageResults, subtitleCodec, outputPath);
+        var args = BuildFfmpegArgs(job, languageResults, subtitleCodec, multiAudioPath);
 
         _logger.LogInformation("ffmpeg args: {Args}", args);
         await _runner.RunAsync(ffmpegPath, args, ct);
 
-        if (!_fs.FileExists(outputPath))
-            throw new FileNotFoundException($"ffmpeg did not produce output video at {outputPath}");
+        if (!_fs.FileExists(multiAudioPath))
+            throw new FileNotFoundException($"ffmpeg did not produce output video at {multiAudioPath}");
 
-        job.OutputFilePath = outputPath;
+        job.OutputFilePath = multiAudioPath;
         job.State          = JobState.AddedToOriginalVideo;
         await _repo.UpdateAsync(job, ct);
 
-        _logger.LogInformation("Output video written to {Path}", outputPath);
+        _logger.LogInformation("Multi-audio video written to {Path}", multiAudioPath);
+
+        // ── Per-language individual videos ───────────────────────────────────
+        foreach (var lr in languageResults)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            var langPath = Path.Combine(outputFolder, $"{baseName}_{lr.Language}{ext}");
+            _logger.LogInformation("Generating {Language} video → {Out}", lr.Language, langPath);
+
+            var langArgs = BuildSingleLanguageFfmpegArgs(job, lr, languageResults, subtitleCodec, langPath);
+            _logger.LogInformation("ffmpeg args: {Args}", langArgs);
+            await _runner.RunAsync(ffmpegPath, langArgs, ct);
+
+            if (!_fs.FileExists(langPath))
+                _logger.LogWarning("ffmpeg did not produce {Language} video at {Path}", lr.Language, langPath);
+            else
+                _logger.LogInformation("{Language} video written to {Path}", lr.Language, langPath);
+        }
     }
 
     internal static string BuildFfmpegArgs(
@@ -114,6 +135,42 @@ public sealed class VideoMuxerService : IVideoMuxerService
         sb.Append("-metadata:s:s:0 title=\"Original\" ");
         for (int i = 0; i < languageResults.Count; i++)
             sb.Append($"-metadata:s:s:{i + 1} title=\"{languageResults[i].Language}\" ");
+
+        sb.Append($"-shortest \"{outputPath}\"");
+
+        return sb.ToString();
+    }
+
+    internal static string BuildSingleLanguageFfmpegArgs(
+        VideoJob job,
+        LanguageResult lr,
+        IReadOnlyList<LanguageResult> allLanguages,
+        string subtitleCodec,
+        string outputPath)
+    {
+        var sb = new StringBuilder();
+
+        // Inputs: [0] silent video  [1] dubbed audio  [2] original SRT  [3..N+2] all translated SRTs
+        sb.Append($"-y -i \"{job.SilentVideoPath}\" ");
+        sb.Append($"-i \"{lr.MixedAudioPath}\" ");
+        sb.Append($"-i \"{job.SrtFilePath}\" ");
+        foreach (var lang in allLanguages)
+            sb.Append($"-i \"{lang.TranslatedSrtFilePath}\" ");
+
+        sb.Append("-filter_complex \"[1:a]apad[a0]\" ");
+
+        // Video + audio
+        sb.Append("-map 0:v:0 -map [a0] ");
+        // Original subtitle then all language subtitles
+        sb.Append("-map 2:s:0 ");
+        for (int i = 0; i < allLanguages.Count; i++)
+            sb.Append($"-map {3 + i}:s:0 ");
+
+        sb.Append($"-c:v copy -c:a aac -b:a 192k -c:s {subtitleCodec} ");
+        sb.Append($"-metadata:s:a:0 title=\"{lr.Language}\" ");
+        sb.Append("-metadata:s:s:0 title=\"Original\" ");
+        for (int i = 0; i < allLanguages.Count; i++)
+            sb.Append($"-metadata:s:s:{i + 1} title=\"{allLanguages[i].Language}\" ");
 
         sb.Append($"-shortest \"{outputPath}\"");
 
