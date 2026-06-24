@@ -25,16 +25,17 @@ if errorlevel 1 ( echo ERROR: Failed to activate virtual environment. & exit /b 
 echo [3/5] Upgrading pip...
 python -m pip install --upgrade pip --quiet
 
-echo [4/5] Installing Whisper...
-pip install openai-whisper
-if errorlevel 1 ( echo ERROR: Failed to install Whisper. & exit /b 1 )
-
-echo [5/5] Installing PyTorch ^(CUDA 12.1^) + Demucs...
+echo [4/5] Installing PyTorch ^(CUDA 12.8^) + Demucs...
 echo        ^(This can take several minutes - PyTorch is a large download^)
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+echo        ^(PyTorch is installed BEFORE Whisper so pip uses the CUDA build^)
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
 if errorlevel 1 ( echo ERROR: Failed to install PyTorch. & exit /b 1 )
 pip install demucs
 if errorlevel 1 ( echo ERROR: Failed to install Demucs. & exit /b 1 )
+
+echo [5/5] Installing Whisper...
+pip install openai-whisper
+if errorlevel 1 ( echo ERROR: Failed to install Whisper. & exit /b 1 )
 
 echo.
 echo ============================================================
@@ -49,9 +50,9 @@ echo    python -c "import demucs; print('Demucs OK')"
 echo.
 echo  Pass --venv bgtts-env to the CLI to use this environment.
 echo.
-echo  NOTE: If your GPU driver is newer than CUDA 12.1, visit
-echo        https://pytorch.org/get-started/locally/ to get the
-echo        correct --index-url for your driver version.
+echo  NOTE: cu128 requires CUDA 12.8 drivers (Game Ready 570+ / Studio 572+).
+echo        For older drivers visit https://pytorch.org/get-started/locally/
+echo        to get the correct --index-url for your driver version.
 echo ============================================================
 
 endlocal

@@ -30,15 +30,15 @@ if errorlevel 1 ( echo ERROR: Failed to activate virtual environment. & exit /b 
 echo [3/5] Upgrading pip...
 python -m pip install --upgrade pip --quiet
 
-echo [4/5] Installing Whisper...
-pip install openai-whisper
-if errorlevel 1 ( echo ERROR: Failed to install Whisper. & exit /b 1 )
-
-echo [5/5] Installing PyTorch ^(CPU^) + Demucs...
+echo [4/5] Installing PyTorch ^(CPU^) + Demucs...
 pip install torch torchvision torchaudio
 if errorlevel 1 ( echo ERROR: Failed to install PyTorch. & exit /b 1 )
 pip install demucs
 if errorlevel 1 ( echo ERROR: Failed to install Demucs. & exit /b 1 )
+
+echo [5/5] Installing Whisper...
+pip install openai-whisper
+if errorlevel 1 ( echo ERROR: Failed to install Whisper. & exit /b 1 )
 
 echo.
 echo ============================================================

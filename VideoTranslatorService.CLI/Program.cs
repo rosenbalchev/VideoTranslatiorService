@@ -135,7 +135,7 @@ internal sealed class Program
                 DemucsPath                = venvPython ?? parseResult.GetValue(demucsOpt)!,
                 AzureSubscriptionKey      = parseResult.GetValue(azureKeyOpt)!,
                 AzureEndpointUrl          = parseResult.GetValue(azureEndpointOpt)!,
-                AzureOpenAiEndpoint       = parseResult.GetValue(openAiEndpointOpt)!,
+                AzureOpenAiEndpoint       = NormalizeOpenAiEndpoint(parseResult.GetValue(openAiEndpointOpt)!),
                 AzureOpenAiDeployment     = parseResult.GetValue(openAiDeploymentOpt)!,
                 TranslationTargetLanguages = parseResult.GetValue(targetLangOpt)!
                     .Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries),
@@ -225,6 +225,19 @@ internal sealed class Program
         OperatingSystem.IsWindows()
             ? Path.Combine(venvRoot, "Scripts", "python.exe")
             : Path.Combine(venvRoot, "bin", "python");
+
+    // AzureOpenAIClient builds the REST path internally (/openai/deployments/…).
+    // Strip any /openai/v1 suffix the user may have copied from AI Foundry docs.
+    private static string NormalizeOpenAiEndpoint(string raw)
+    {
+        var url = raw.TrimEnd('/');
+        foreach (var suffix in new[] { "/openai/v1", "/openai" })
+        {
+            if (url.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
+                return url[..^suffix.Length] + "/";
+        }
+        return url + "/";
+    }
 
     private static ServiceProvider BuildServices(string dbPath, PipelineOptions opts) =>
         new ServiceCollection()
