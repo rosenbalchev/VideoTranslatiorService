@@ -1,4 +1,5 @@
 using Azure.AI.OpenAI;
+using Azure.Core;
 using Azure.Identity;
 using System.CommandLine;
 using System.CommandLine.Parsing;
@@ -253,7 +254,7 @@ internal sealed class Program
             {
                 var openAiClient = new AzureOpenAIClient(
                     new Uri(opts.AzureOpenAiEndpoint),
-                    new DefaultAzureCredential());
+                    new AzureKeyCredential(opts.AzureSubscriptionKey));
                 return new AzureChatEngine(openAiClient.GetChatClient(opts.AzureOpenAiDeployment));
             })
             .AddScoped<ISrtTranslatorService, SrtTranslatorService>()
