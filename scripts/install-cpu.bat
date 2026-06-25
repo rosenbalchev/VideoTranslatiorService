@@ -11,6 +11,11 @@ echo        benefit greatly from a CUDA-capable NVIDIA GPU.
 echo        Use install-cuda.bat if you have one.
 echo.
 
+if defined VIRTUAL_ENV (
+    echo  Deactivating active virtual environment: %VIRTUAL_ENV%
+    call deactivate
+)
+
 py -3.12 --version >nul 2>&1
 if errorlevel 1 (
     echo ERROR: Python 3.12 not found.
@@ -37,8 +42,8 @@ python -m pip install --upgrade pip --quiet
 echo [5/6] Installing PyTorch ^(CPU^) + Demucs...
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
 if errorlevel 1 ( echo ERROR: Failed to install PyTorch. & exit /b 1 )
-pip install torchcodec --index-url https://download.pytorch.org/whl/cpu
-if errorlevel 1 ( echo ERROR: Failed to install torchcodec. & exit /b 1 )
+pip install soundfile
+if errorlevel 1 ( echo ERROR: Failed to install soundfile. & exit /b 1 )
 pip install demucs
 if errorlevel 1 ( echo ERROR: Failed to install Demucs. & exit /b 1 )
 

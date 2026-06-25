@@ -6,6 +6,11 @@ echo  AI Video Translator - Python environment setup (CUDA)
 echo ============================================================
 echo.
 
+if defined VIRTUAL_ENV (
+    echo  Deactivating active virtual environment: %VIRTUAL_ENV%
+    call deactivate
+)
+
 py -3.12 --version >nul 2>&1
 if errorlevel 1 (
     echo ERROR: Python 3.12 not found.
@@ -34,8 +39,8 @@ echo        ^(This can take several minutes - PyTorch is a large download^)
 echo        ^(PyTorch is installed BEFORE Whisper so pip uses the CUDA build^)
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
 if errorlevel 1 ( echo ERROR: Failed to install PyTorch. & exit /b 1 )
-pip install torchcodec --index-url https://download.pytorch.org/whl/cu124
-if errorlevel 1 ( echo ERROR: Failed to install torchcodec. & exit /b 1 )
+pip install soundfile
+if errorlevel 1 ( echo ERROR: Failed to install soundfile. & exit /b 1 )
 pip install demucs
 if errorlevel 1 ( echo ERROR: Failed to install Demucs. & exit /b 1 )
 
