@@ -37,8 +37,8 @@ python -m pip install --upgrade pip --quiet
 echo [5/6] Installing PyTorch ^(CPU^) + Demucs...
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
 if errorlevel 1 ( echo ERROR: Failed to install PyTorch. & exit /b 1 )
-pip install soundfile
-if errorlevel 1 ( echo ERROR: Failed to install soundfile. & exit /b 1 )
+pip install torchcodec --index-url https://download.pytorch.org/whl/cpu
+if errorlevel 1 ( echo ERROR: Failed to install torchcodec. & exit /b 1 )
 pip install demucs
 if errorlevel 1 ( echo ERROR: Failed to install Demucs. & exit /b 1 )
 

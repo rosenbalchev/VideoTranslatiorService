@@ -29,13 +29,13 @@ if errorlevel 1 ( echo ERROR: Failed to activate virtual environment. & exit /b 
 echo [4/6] Upgrading pip...
 python -m pip install --upgrade pip --quiet
 
-echo [5/6] Installing PyTorch ^(CUDA 12.8^) + Demucs...
+echo [5/6] Installing PyTorch ^(CUDA 12.4^) + Demucs...
 echo        ^(This can take several minutes - PyTorch is a large download^)
 echo        ^(PyTorch is installed BEFORE Whisper so pip uses the CUDA build^)
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
 if errorlevel 1 ( echo ERROR: Failed to install PyTorch. & exit /b 1 )
-pip install soundfile
-if errorlevel 1 ( echo ERROR: Failed to install soundfile. & exit /b 1 )
+pip install torchcodec --index-url https://download.pytorch.org/whl/cu124
+if errorlevel 1 ( echo ERROR: Failed to install torchcodec. & exit /b 1 )
 pip install demucs
 if errorlevel 1 ( echo ERROR: Failed to install Demucs. & exit /b 1 )
 
@@ -57,7 +57,8 @@ echo    ffmpeg -version
 echo.
 echo  Pass --venv bgtts-env to the CLI to use this environment.
 echo.
-echo  NOTE: cu128 requires CUDA 12.8 drivers (Game Ready 570+ / Studio 572+).
+echo  NOTE: cu124 requires CUDA 12.4+ drivers (Game Ready 550+ / Studio 555+).
+echo        Runs fine on newer hardware ^(12.6, 12.8^) — CUDA is backward-compatible.
 echo        For older drivers visit https://pytorch.org/get-started/locally/
 echo        to get the correct --index-url for your driver version.
 echo ============================================================
