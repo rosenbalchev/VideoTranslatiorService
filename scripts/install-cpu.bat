@@ -11,11 +11,11 @@ echo        benefit greatly from a CUDA-capable NVIDIA GPU.
 echo        Use install-cuda.bat if you have one.
 echo.
 
-where python >nul 2>&1
+py -3.12 --version >nul 2>&1
 if errorlevel 1 (
-    echo ERROR: Python not found on PATH.
-    echo        Download it from https://www.python.org/downloads/
-    echo        Make sure to check "Add Python to PATH" during install.
+    echo ERROR: Python 3.12 not found.
+    echo        Install it with: winget install -e --id Python.Python.3.12
+    echo        PyTorch does not yet support Python 3.13 or 3.14.
     exit /b 1
 )
 
@@ -23,8 +23,8 @@ echo [1/6] Installing FFmpeg (system dependency)...
 winget install -e --id Gyan.FFmpeg.Shared
 if errorlevel 1 ( echo ERROR: Failed to install FFmpeg. Make sure winget is available. & exit /b 1 )
 
-echo [2/6] Creating virtual environment "bgtts-env"...
-python -m venv bgtts-env
+echo [2/6] Creating virtual environment "bgtts-env" ^(Python 3.12^)...
+py -3.12 -m venv bgtts-env
 if errorlevel 1 ( echo ERROR: Failed to create virtual environment. & exit /b 1 )
 
 echo [3/6] Activating environment...
