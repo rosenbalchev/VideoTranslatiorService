@@ -14,28 +14,32 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo [1/5] Creating virtual environment "bgtts-env"...
+echo [1/6] Installing FFmpeg (system dependency)...
+winget install -e --id Gyan.FFmpeg.Shared
+if errorlevel 1 ( echo ERROR: Failed to install FFmpeg. Make sure winget is available. & exit /b 1 )
+
+echo [2/6] Creating virtual environment "bgtts-env"...
 python -m venv bgtts-env
 if errorlevel 1 ( echo ERROR: Failed to create virtual environment. & exit /b 1 )
 
-echo [2/5] Activating environment...
+echo [3/6] Activating environment...
 call bgtts-env\Scripts\activate.bat
 if errorlevel 1 ( echo ERROR: Failed to activate virtual environment. & exit /b 1 )
 
-echo [3/5] Upgrading pip...
+echo [4/6] Upgrading pip...
 python -m pip install --upgrade pip --quiet
 
-echo [4/5] Installing PyTorch ^(CUDA 12.8^) + Demucs...
+echo [5/6] Installing PyTorch ^(CUDA 12.8^) + Demucs...
 echo        ^(This can take several minutes - PyTorch is a large download^)
 echo        ^(PyTorch is installed BEFORE Whisper so pip uses the CUDA build^)
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
 if errorlevel 1 ( echo ERROR: Failed to install PyTorch. & exit /b 1 )
-pip install torchcodec
-if errorlevel 1 ( echo   WARNING: torchcodec not available on this platform. If Demucs fails with ImportError, install manually. )
+pip install torchcodec --index-url https://download.pytorch.org/whl/cu128
+if errorlevel 1 ( echo ERROR: Failed to install torchcodec. & exit /b 1 )
 pip install demucs
 if errorlevel 1 ( echo ERROR: Failed to install Demucs. & exit /b 1 )
 
-echo [5/5] Installing faster-whisper + CUDA runtime libs...
+echo [6/6] Installing faster-whisper + CUDA runtime libs...
 pip install faster-whisper nvidia-cublas-cu12 nvidia-cudnn-cu12
 if errorlevel 1 ( echo ERROR: Failed to install faster-whisper. & exit /b 1 )
 
@@ -49,6 +53,7 @@ echo    bgtts-env\Scripts\activate
 echo    python -c "import faster_whisper; print('faster-whisper OK')"
 echo    python -c "import torch; print('CUDA available:', torch.cuda.is_available())"
 echo    python -c "import demucs; print('Demucs OK')"
+echo    ffmpeg -version
 echo.
 echo  Pass --venv bgtts-env to the CLI to use this environment.
 echo.
