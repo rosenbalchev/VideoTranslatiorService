@@ -95,7 +95,7 @@ Completed  ✓
 |-------------|-------|
 | [.NET 10 SDK](https://dotnet.microsoft.com/download) | `net10.0` target |
 | [ffmpeg](https://ffmpeg.org/download.html) | On `PATH` or via `--ffmpeg` |
-| [Python 3.11](https://www.python.org/downloads/) | Required for Whisper and Demucs |
+| [Python 3.12](https://www.python.org/downloads/) | Required for faster-whisper and Demucs |
 | Azure Cognitive Services (Speech) | TTS key + endpoint |
 | Azure AI Services (OpenAI) | GPT-4o-mini deployment; uses `DefaultAzureCredential` — run `az login` first |
 
@@ -105,8 +105,8 @@ Use one of the provided scripts to create an isolated virtual environment with a
 
 | Script | When to use |
 |--------|-------------|
-| `scripts\install-cuda.bat` | NVIDIA GPU available — installs PyTorch with CUDA 12.1 (5–10× faster) |
-| `scripts\install-cpu.bat`  | No GPU — installs CPU-only PyTorch |
+| `scripts\install-cuda.bat` | NVIDIA GPU available — installs PyTorch 2.5.1 with CUDA 12.4 (5–10× faster) |
+| `scripts\install-cpu.bat`  | No GPU — installs CPU-only PyTorch 2.5.1 |
 
 Both scripts create a `bgtts-env` folder in the current directory. Pass `--venv bgtts-env` to the CLI to use it.
 
