@@ -20,11 +20,10 @@ py -3.12 --version >nul 2>&1
 if errorlevel 1 (
     echo ERROR: Python 3.12 not found.
     echo        Install it with: winget install -e --id Python.Python.3.12
-    echo        PyTorch does not yet support Python 3.13 or 3.14.
     exit /b 1
 )
 
-echo [1/6] Installing FFmpeg (system dependency)...
+echo [1/6] Installing FFmpeg ^(system dependency^)...
 winget install -e --id Gyan.FFmpeg.Shared
 if errorlevel 1 ( echo ERROR: Failed to install FFmpeg. Make sure winget is available. & exit /b 1 )
 
@@ -39,13 +38,11 @@ if errorlevel 1 ( echo ERROR: Failed to activate virtual environment. & exit /b 
 echo [4/6] Upgrading pip...
 python -m pip install --upgrade pip --quiet
 
-echo [5/6] Installing PyTorch ^(CPU^) + Demucs...
+echo [5/6] Installing PyTorch 2.5.1 ^(CPU^) + Demucs...
+echo        ^(This can take several minutes - PyTorch is a large download^)
+echo        ^(Pinned to 2.5.1 — 2.6+ requires torchcodec which has no Windows build^)
 pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cpu
 if errorlevel 1 ( echo ERROR: Failed to install PyTorch. & exit /b 1 )
-pip install soundfile
-if errorlevel 1 ( echo ERROR: Failed to install soundfile. & exit /b 1 )
-python scripts\patch_torchaudio.py
-if errorlevel 1 ( echo ERROR: Failed to patch torchaudio. & exit /b 1 )
 pip install demucs
 if errorlevel 1 ( echo ERROR: Failed to install Demucs. & exit /b 1 )
 
