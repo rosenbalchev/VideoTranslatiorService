@@ -1,6 +1,6 @@
 using Azure.AI.OpenAI;
-using Azure.Core;
 using Azure.Identity;
+using System.ClientModel;
 using System.CommandLine;
 using System.CommandLine.Parsing;
 using Microsoft.EntityFrameworkCore;
@@ -18,22 +18,11 @@ internal sealed class Program
 {
     private static async Task<int> Main(string[] args)
     {
-        var inputFolderOpt = new Option<DirectoryInfo>("--input-folder")
+        var workFolderOpt = new Option<DirectoryInfo>("--work-folder")
         {
             Required = true,
-            Description = "Folder to scan for new video files"
-        };
-
-        var processingFolderOpt = new Option<DirectoryInfo>("--processing-folder")
-        {
-            Required = true,
-            Description = "Working folder where jobs are staged during processing"
-        };
-
-        var dbOpt = new Option<FileInfo>("--db")
-        {
-            Description = "Path to the SQLite database file",
-            DefaultValueFactory = _ => new FileInfo("videotranslator.db")
+            Description = "Root folder for all pipeline data. Subfolders 'input', 'processing', 'output' " +
+                          "are created automatically. The database is stored as 'videotranslator.db' inside it."
         };
 
         var ffmpegOpt = new Option<string>("--ffmpeg")
@@ -85,12 +74,6 @@ internal sealed class Program
             DefaultValueFactory = _ => "Bulgarian"
         };
 
-        var outputFolderOpt = new Option<string>("--output-folder")
-        {
-            Description = "Folder where the finished dubbed video files are written",
-            DefaultValueFactory = _ => "output"
-        };
-
         var venvOpt = new Option<DirectoryInfo?>("--venv")
         {
             Description = "Path to a Python virtual environment whose interpreter is used for ALL Python " +
@@ -106,9 +89,7 @@ internal sealed class Program
         var root = new RootCommand(
             "AI Video Translator — picks up video files and advances them through the translation pipeline");
 
-        root.Add(inputFolderOpt);
-        root.Add(processingFolderOpt);
-        root.Add(dbOpt);
+        root.Add(workFolderOpt);
         root.Add(ffmpegOpt);
         root.Add(pythonOpt);
         root.Add(demucsOpt);
@@ -117,15 +98,20 @@ internal sealed class Program
         root.Add(openAiEndpointOpt);
         root.Add(openAiDeploymentOpt);
         root.Add(targetLangOpt);
-        root.Add(outputFolderOpt);
         root.Add(venvOpt);
         root.Add(femaleOpt);
 
         root.SetAction(async parseResult =>
         {
-            var inputFolder      = parseResult.GetValue(inputFolderOpt)!;
-            var processingFolder = parseResult.GetValue(processingFolderOpt)!;
-            var dbFile           = parseResult.GetValue(dbOpt)!;
+            var workFolder       = parseResult.GetValue(workFolderOpt)!;
+            var inputFolder      = new DirectoryInfo(Path.Combine(workFolder.FullName, "input"));
+            var processingFolder = new DirectoryInfo(Path.Combine(workFolder.FullName, "processing"));
+            var outputFolder     = Path.Combine(workFolder.FullName, "output");
+            var dbFile           = new FileInfo(Path.Combine(workFolder.FullName, "videotranslator.db"));
+
+            Directory.CreateDirectory(inputFolder.FullName);
+            Directory.CreateDirectory(processingFolder.FullName);
+            Directory.CreateDirectory(outputFolder);
 
             var venv = parseResult.GetValue(venvOpt);
             var venvPython = venv is not null ? VenvPythonPath(venv.FullName) : null;
@@ -141,7 +127,7 @@ internal sealed class Program
                 AzureOpenAiDeployment     = parseResult.GetValue(openAiDeploymentOpt)!,
                 TranslationTargetLanguages = parseResult.GetValue(targetLangOpt)!
                     .Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries),
-                OutputFolderPath          = Path.GetFullPath(parseResult.GetValue(outputFolderOpt)!),
+                OutputFolderPath          = outputFolder,
                 UseFemaleVoice            = parseResult.GetValue(femaleOpt),
             };
 
@@ -255,7 +241,7 @@ internal sealed class Program
             {
                 var openAiClient = new AzureOpenAIClient(
                     new Uri(opts.AzureOpenAiEndpoint),
-                    new AzureKeyCredential(opts.AzureSubscriptionKey));
+                    new ApiKeyCredential(opts.AzureSubscriptionKey));
                 return new AzureChatEngine(openAiClient.GetChatClient(opts.AzureOpenAiDeployment));
             })
             .AddScoped<ISrtTranslatorService, SrtTranslatorService>()
