@@ -10,6 +10,7 @@ using VideoTranslatorService.BLL;
 using VideoTranslatorService.BLL.Services;
 using VideoTranslatorService.Data.Context;
 using VideoTranslatorService.Data.Repositories;
+using Azure;
 
 namespace VideoTranslatorService.CLI;
 
