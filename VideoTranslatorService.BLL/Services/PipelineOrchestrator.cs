@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using VideoTranslatorService.Data.Entities;
@@ -98,6 +99,8 @@ public sealed class PipelineOrchestrator : IPipelineOrchestrator
 
     public async Task AdvanceAsync(VideoJob job, PipelineOptions options, CancellationToken ct = default)
     {
+        var sw = Stopwatch.StartNew();
+
         if (StablePredecessor.TryGetValue(job.State, out var stableState))
         {
             _logger.LogWarning(
@@ -141,8 +144,15 @@ public sealed class PipelineOrchestrator : IPipelineOrchestrator
             }
         }
 
-        if (IsTerminal(job.State))
-            _logger.LogInformation("Job {Id} reached terminal state: {State}", job.Id, job.State);
+        sw.Stop();
+        if (job.State == JobState.AddedToOriginalVideo)
+            _logger.LogInformation(
+                "Operation completed: {File} — total time {Elapsed:F0} seconds. Output: {Output}",
+                job.OriginalFileName, sw.Elapsed.TotalSeconds, job.OutputFilePath);
+        else if (IsTerminal(job.State))
+            _logger.LogInformation(
+                "Job {Id} reached terminal state {State} after {Elapsed:F0} seconds",
+                job.Id, job.State, sw.Elapsed.TotalSeconds);
     }
 
     private async Task ExecuteStepAsync(VideoJob job, PipelineOptions options, CancellationToken ct)

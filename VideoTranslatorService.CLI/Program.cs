@@ -228,7 +228,10 @@ internal sealed class Program
 
     private static ServiceProvider BuildServices(string dbPath, PipelineOptions opts) =>
         new ServiceCollection()
-            .AddLogging(b => b.AddConsole().SetMinimumLevel(LogLevel.Information))
+            .AddLogging(b => b
+                .AddSimpleConsole(opts => opts.TimestampFormat = "HH:mm:ss ")
+                .SetMinimumLevel(LogLevel.Information)
+                .AddFilter("Microsoft.EntityFrameworkCore", LogLevel.Warning))
             .AddDbContext<AppDbContext>(o => o.UseSqlite($"Data Source={dbPath}"))
             .AddScoped<IVideoJobRepository, VideoJobRepository>()
             .AddScoped<IJobService, JobService>()
