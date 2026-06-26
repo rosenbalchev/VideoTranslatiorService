@@ -91,7 +91,7 @@ public sealed class SrtToAzureTtsServiceTests
     {
         var sut = MakeSut(out _, out _, out _);
         await Assert.ThrowsAsync<InvalidOperationException>(
-            () => sut.SynthesiseAsync(MakeJob(null), "key", "https://ep/"));
+            () => sut.SynthesiseAsync(MakeJob(null), "key", "https://ep/", "bg-BG-BorislavNeural", "bg-BG"));
     }
 
     [Fact]
@@ -99,7 +99,7 @@ public sealed class SrtToAzureTtsServiceTests
     {
         var sut = MakeSut(out _, out _, out _);
         await Assert.ThrowsAsync<InvalidOperationException>(
-            () => sut.SynthesiseAsync(MakeJob(""), "key", "https://ep/"));
+            () => sut.SynthesiseAsync(MakeJob(""), "key", "https://ep/", "bg-BG-BorislavNeural", "bg-BG"));
     }
 
     [Fact]
@@ -107,7 +107,7 @@ public sealed class SrtToAzureTtsServiceTests
     {
         var sut = MakeSut(out _, out _, out _, srtContent: "not valid srt content");
         await Assert.ThrowsAsync<InvalidOperationException>(
-            () => sut.SynthesiseAsync(MakeJob(), "key", "https://ep/"));
+            () => sut.SynthesiseAsync(MakeJob(), "key", "https://ep/", "bg-BG-BorislavNeural", "bg-BG"));
     }
 
     // ── SSML file ─────────────────────────────────────────────────────────────
@@ -129,14 +129,14 @@ public sealed class SrtToAzureTtsServiceTests
                 return Task.FromResult(FakeEngineWav);
             });
 
-        await sut.SynthesiseAsync(MakeJob(), "key", "https://ep/");
+        await sut.SynthesiseAsync(MakeJob(), "key", "https://ep/", "bg-BG-BorislavNeural", "bg-BG");
     }
 
     [Fact]
     public async Task SynthesiseAsync_SsmlFileNameMatchesJobBaseName()
     {
         var sut = MakeSut(out _, out var fs, out _);
-        await sut.SynthesiseAsync(MakeJob(), "key", "https://ep/");
+        await sut.SynthesiseAsync(MakeJob(), "key", "https://ep/", "bg-BG-BorislavNeural", "bg-BG");
         await fs.Received(1).WriteAllTextAsync(
             Arg.Is<string>(p => p.EndsWith("video_translated_azure_tts.ssml")),
             Arg.Any<string>(), Arg.Any<CancellationToken>());
@@ -149,7 +149,7 @@ public sealed class SrtToAzureTtsServiceTests
         string? ssml = null;
         await fs.WriteAllTextAsync(Arg.Any<string>(), Arg.Do<string>(s => ssml = s), Arg.Any<CancellationToken>());
 
-        await sut.SynthesiseAsync(MakeJob(), "key", "https://ep/");
+        await sut.SynthesiseAsync(MakeJob(), "key", "https://ep/", "bg-BG-BorislavNeural", "bg-BG");
 
         Assert.NotNull(ssml);
         Assert.Contains("Hello world", ssml);
@@ -163,7 +163,7 @@ public sealed class SrtToAzureTtsServiceTests
     {
         var sut = MakeSut(out _, out _, out _);
         var job = MakeJob();
-        await sut.SynthesiseAsync(job, "key", "https://ep/");
+        await sut.SynthesiseAsync(job, "key", "https://ep/", "bg-BG-BorislavNeural", "bg-BG");
         Assert.Equal(Path.Combine("/proc", "video_translated_azure_tts.wav"), job.AzureTtsAudioPath);
     }
 
@@ -171,7 +171,7 @@ public sealed class SrtToAzureTtsServiceTests
     public async Task SynthesiseAsync_TransitionsStateToAzureTtsSynthesised()
     {
         var sut = MakeSut(out var repo, out _, out _);
-        await sut.SynthesiseAsync(MakeJob(), "key", "https://ep/");
+        await sut.SynthesiseAsync(MakeJob(), "key", "https://ep/", "bg-BG-BorislavNeural", "bg-BG");
         await repo.Received(1).UpdateAsync(
             Arg.Is<VideoJob>(j => j.State == JobState.AzureTtsSynthesised),
             Arg.Any<CancellationToken>());
@@ -183,7 +183,7 @@ public sealed class SrtToAzureTtsServiceTests
     public async Task SynthesiseAsync_PassesSubscriptionKeyToEngine()
     {
         var sut = MakeSut(out _, out _, out var engine);
-        await sut.SynthesiseAsync(MakeJob(), "my-secret-key", "https://ep/");
+        await sut.SynthesiseAsync(MakeJob(), "my-secret-key", "https://ep/", "bg-BG-BorislavNeural", "bg-BG");
         await engine.Received().SpeakSsmlAsync(
             Arg.Any<string>(), Arg.Any<string>(), "my-secret-key",
             Arg.Any<string>(), Arg.Any<CancellationToken>());
@@ -193,7 +193,7 @@ public sealed class SrtToAzureTtsServiceTests
     public async Task SynthesiseAsync_PassesEndpointUrlToEngine()
     {
         var sut = MakeSut(out _, out _, out var engine);
-        await sut.SynthesiseAsync(MakeJob(), "key", "https://my-resource.cognitiveservices.azure.com/");
+        await sut.SynthesiseAsync(MakeJob(), "key", "https://my-resource.cognitiveservices.azure.com/", "bg-BG-BorislavNeural", "bg-BG");
         await engine.Received().SpeakSsmlAsync(
             Arg.Any<string>(), "https://my-resource.cognitiveservices.azure.com/",
             Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
@@ -203,7 +203,7 @@ public sealed class SrtToAzureTtsServiceTests
     public async Task SynthesiseAsync_PassesVoiceNameToEngine()
     {
         var sut = MakeSut(out _, out _, out var engine);
-        await sut.SynthesiseAsync(MakeJob(), "key", "https://ep/", "en-US-Ava:DragonHDLatestNeural");
+        await sut.SynthesiseAsync(MakeJob(), "key", "https://ep/", "en-US-Ava:DragonHDLatestNeural", "en-US");
         await engine.Received().SpeakSsmlAsync(
             Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(),
             "en-US-Ava:DragonHDLatestNeural", Arg.Any<CancellationToken>());
@@ -220,7 +220,7 @@ public sealed class SrtToAzureTtsServiceTests
                 Arg.Any<string>(), Arg.Any<CancellationToken>())
             .ThrowsAsync(new InvalidOperationException("Azure TTS cancelled"));
         await Assert.ThrowsAsync<InvalidOperationException>(
-            () => sut.SynthesiseAsync(MakeJob(), "key", "https://ep/"));
+            () => sut.SynthesiseAsync(MakeJob(), "key", "https://ep/", "bg-BG-BorislavNeural", "bg-BG"));
     }
 
     // ── SplitIntoSegments unit tests ──────────────────────────────────────────

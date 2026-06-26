@@ -13,7 +13,7 @@ public interface ISrtToAzureTtsService
         VideoJob job,
         string subscriptionKey,
         string endpointUrl,
-        string voiceName = "en-US-Ava:DragonHDLatestNeural",
-        string lang = "en-US",
+        string voiceName,
+        string lang,
         CancellationToken ct = default);
 }
