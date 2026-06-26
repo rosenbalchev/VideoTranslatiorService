@@ -44,10 +44,11 @@ public sealed class VideoMuxerService : IVideoMuxerService
 
         var ext           = Path.GetExtension(job.OriginalFileName).ToLowerInvariant();
         var baseName      = Path.GetFileNameWithoutExtension(job.OriginalFileName);
+        var outputExt     = ext is ".mkv" ? ".mkv" : ".mp4";
         var subtitleCodec = ext is ".mkv" ? "srt" : "mov_text";
 
         // ── Multi-audio master (all languages + original) ────────────────────
-        var multiAudioPath = Path.Combine(outputFolder, $"{baseName}_multiAudio{ext}");
+        var multiAudioPath = Path.Combine(outputFolder, $"{baseName}_multiAudio{outputExt}");
 
         _logger.LogInformation(
             "Muxing {Video} + original audio + {N} language track(s) → {Out}",
@@ -72,7 +73,7 @@ public sealed class VideoMuxerService : IVideoMuxerService
         {
             ct.ThrowIfCancellationRequested();
 
-            var langPath = Path.Combine(outputFolder, $"{baseName}_{lr.Language}{ext}");
+            var langPath = Path.Combine(outputFolder, $"{baseName}_{lr.Language}{outputExt}");
             _logger.LogInformation("Generating {Language} video → {Out}", lr.Language, langPath);
 
             var langArgs = BuildSingleLanguageFfmpegArgs(job, lr, languageResults, subtitleCodec, langPath);
