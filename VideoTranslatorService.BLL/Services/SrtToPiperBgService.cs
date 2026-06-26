@@ -8,15 +8,6 @@ namespace VideoTranslatorService.BLL.Services;
 
 public sealed class SrtToAzureTtsService : ISrtToAzureTtsService
 {
-    // Azure Speech SDK cancels a request if it receives no audio frame for 3 000 ms.
-    // The server generates silence for <break> elements as a single delayed frame, so a
-    // break longer than this threshold triggers the watchdog. We handle larger gaps by
-    // inserting raw silence WAV ourselves and never put them in the SSML.
-    private const int MaxSilenceBreakMs = 2500;
-
-    // Hard cap on entries per synthesis call as a secondary safety measure.
-    private const int MaxEntriesPerSegment = 30;
-
     private readonly IVideoJobRepository _repo;
     private readonly IFileSystem _fs;
     private readonly IAzureSpeechEngine _engine;
@@ -59,34 +50,17 @@ public sealed class SrtToAzureTtsService : ISrtToAzureTtsService
         if (entries.Count == 0)
             throw new InvalidOperationException($"No subtitle entries found in {job.SrtFilePath}.");
 
-        // Use the translated SRT filename as base so each language gets its own output files
-        // (e.g. "video_translated_Bulgarian_azure_tts.wav" vs "video_translated_German_azure_tts.wav").
         var baseName = Path.GetFileNameWithoutExtension(job.TranslatedSrtFilePath);
 
-        // Write full SSML to disk for inspection (includes all breaks, even large ones)
         var fullSsml = BuildSsml(entries, voiceName, lang);
         var ssmlPath = Path.Combine(job.ProcessingFolderPath, $"{baseName}_azure_tts.ssml");
         await _fs.WriteAllTextAsync(ssmlPath, fullSsml, ct);
 
-        // Compute chars/sec from this file's own subtitle timing rather than a hardcoded guess.
-        var totalChars = entries.Sum(e => e.Text.Length);
-        var totalMs    = entries.Sum(e => e.EndMs - e.StartMs);
-        var charsPerSecond = totalMs > 0
-            ? totalChars / (totalMs / 1000.0)
-            : FallbackCharsPerSecond;
-
         _logger.LogInformation(
-            "Synthesising Azure TTS audio ({Voice}/{Lang}) from {Srt} — {Count} entries. " +
-            "Subtitle avg pace: {Cps:F1} chars/sec. SSML: {Ssml}",
-            voiceName, lang, job.TranslatedSrtFilePath, entries.Count, charsPerSecond, ssmlPath);
+            "Synthesising Azure TTS audio ({Voice}/{Lang}) from {Srt} — {Count} entries. SSML: {Ssml}",
+            voiceName, lang, job.TranslatedSrtFilePath, entries.Count, ssmlPath);
 
-        // One TTS call per subtitle entry guarantees each entry's leading silence is
-        // derived from its absolute timestamp — no within-segment drift.
-        var (audioData, syncedEntries) = await SynthesisePerEntryAsync(entries, endpointUrl, subscriptionKey, voiceName, lang, charsPerSecond, ct);
-
-        // Overwrite the translated SRT with timing-adjusted timestamps that match actual
-        // TTS audio positions so embedded subtitles stay in sync with the dubbed track.
-        await _fs.WriteAllTextAsync(job.TranslatedSrtFilePath, ToSrtString(syncedEntries), ct);
+        var audioData = await _engine.SpeakSsmlAsync(fullSsml, endpointUrl, subscriptionKey, voiceName, ct);
 
         var outputWav = Path.Combine(job.ProcessingFolderPath, $"{baseName}_azure_tts.wav");
         await using var fileStream = _fs.Create(outputWav);
@@ -97,161 +71,6 @@ public sealed class SrtToAzureTtsService : ISrtToAzureTtsService
         await _repo.UpdateAsync(job, ct);
 
         _logger.LogInformation("Azure TTS audio written to {Wav}", outputWav);
-    }
-
-    // ── Per-entry synthesis ───────────────────────────────────────────────────
-    // One TTS call per subtitle entry. Each resulting WAV is padded with silence
-    // to exactly fill the entry's declared window. Leading silence before each
-    // entry is computed from the absolute subtitle timestamp so there is no
-    // within-segment drift regardless of how fast or slow TTS speaks.
-
-    private const int MaxTtsRetries = 3;
-
-    private async Task<(byte[] Audio, List<SrtEntry> SyncedEntries)> SynthesisePerEntryAsync(
-        IReadOnlyList<SrtEntry> entries,
-        string endpointUrl,
-        string subscriptionKey,
-        string voiceName,
-        string lang,
-        double charsPerSecond,
-        CancellationToken ct)
-    {
-        _logger.LogInformation("Synthesising {Count} entries one-by-one for precise sync", entries.Count);
-
-        var chunks        = new List<byte[]>(entries.Count * 2);
-        var syncedEntries = new List<SrtEntry>(entries.Count);
-        var curMs         = 0;
-
-        for (int i = 0; i < entries.Count; i++)
-        {
-            ct.ThrowIfCancellationRequested();
-
-            var entry         = entries[i];
-            var leadingMs     = Math.Max(0, entry.StartMs - curMs);
-            var expectedMs    = entry.EndMs - entry.StartMs;
-            // True audio start after any leading silence — equals Math.Max(curMs, entry.StartMs).
-            // Tracking this separately prevents curMs from being reset backwards when a prior
-            // entry overruns and the next entry's leadingMs is trimmed to zero.
-            var actualStartMs = curMs + leadingMs;
-
-            if (leadingMs > 0)
-                chunks.Add(MakeSilenceWav(leadingMs));
-
-            var rate = SpeechRateFor(entry.Text, expectedMs, charsPerSecond);
-            var ssml = BuildEntrySsml(entry.Text, voiceName, lang, rate);
-
-            _logger.LogInformation(
-                "TTS entry {I}/{Total} [{Start}→{End}ms] rate={Rate:F0}%",
-                i + 1, entries.Count, entry.StartMs, entry.EndMs, rate);
-
-            // Retry on transient Azure SDK timeouts (frame-interval watchdog fires ~3 000ms).
-            byte[]? audio = null;
-            for (int attempt = 1; attempt <= MaxTtsRetries; attempt++)
-            {
-                try
-                {
-                    audio = await _engine.SpeakSsmlAsync(ssml, endpointUrl, subscriptionKey, voiceName, ct);
-                    break;
-                }
-                catch (OperationCanceledException) { throw; }
-                catch (Exception ex)
-                {
-                    if (attempt == MaxTtsRetries)
-                    {
-                        _logger.LogWarning(
-                            "Entry {I}/{Total} failed all {Max} TTS attempts — substituting silence. Last: {Msg}",
-                            i + 1, entries.Count, MaxTtsRetries, ex.Message);
-                    }
-                    else
-                    {
-                        var delayMs = 500 * attempt;
-                        _logger.LogWarning(
-                            "Entry {I}/{Total} TTS attempt {Attempt}/{Max} failed ({Msg}) — retrying in {Delay}ms",
-                            i + 1, entries.Count, attempt, MaxTtsRetries, ex.Message, delayMs);
-                        await Task.Delay(delayMs, ct);
-                    }
-                }
-            }
-            audio ??= [];
-
-            // spokenMs = audio duration written for this entry (before any silence padding).
-            // srtEndMs = when the voice stops speaking — drives the synced SRT timestamp.
-            int spokenMs;
-            int srtEndMs;
-            if (IsValidRiffWav(audio))
-            {
-                chunks.Add(audio);
-                var actualMs = GetWavDurationMs(audio);
-                srtEndMs     = actualStartMs + actualMs;
-                var padMs    = expectedMs - actualMs;
-                if (padMs > 50)
-                {
-                    chunks.Add(MakeSilenceWav(padMs));
-                    spokenMs = expectedMs; // padded to fill the declared window
-                }
-                else
-                {
-                    spokenMs = actualMs; // audio ran to or past the window boundary
-
-                    if (actualMs > expectedMs + 100)
-                        _logger.LogWarning(
-                            "Entry {I}/{Total} TTS audio ({Actual}ms) overran its window ({Expected}ms) by {Over}ms — " +
-                            "next entry's leading silence reduced accordingly",
-                            i + 1, entries.Count, actualMs, expectedMs, actualMs - expectedMs);
-                }
-            }
-            else
-            {
-                _logger.LogWarning(
-                    "Entry {I}/{Total} returned invalid audio — substituting {Ms}ms silence",
-                    i + 1, entries.Count, expectedMs);
-                chunks.Add(MakeSilenceWav(Math.Max(expectedMs, 1)));
-                spokenMs = expectedMs;
-                srtEndMs = actualStartMs + expectedMs;
-            }
-
-            syncedEntries.Add(new SrtEntry(actualStartMs, srtEndMs, entry.Text));
-            // Advance from actualStartMs so curMs is never reset backwards by an overrun.
-            curMs = actualStartMs + spokenMs;
-        }
-
-        return (ConcatenateWav(chunks), syncedEntries);
-    }
-
-    private static string BuildEntrySsml(string text, string voiceName, string lang, double rate)
-    {
-        var escaped = XmlEscape(text);
-        var content = Math.Abs(rate - 100.0) < 1.0
-            ? escaped
-            : $"<prosody rate=\"{rate:F0}%\">{escaped}</prosody>";
-        return $"<?xml version=\"1.0\" encoding=\"UTF-8\"?>" +
-               $"<speak version=\"1.0\" xmlns=\"http://www.w3.org/2001/10/synthesis\" " +
-               $"xmlns:mstts=\"http://www.w3.org/2001/mstts\" xml:lang=\"{lang}\">" +
-               $"<voice name=\"{voiceName}\">{content}</voice>" +
-               $"</speak>";
-    }
-
-    // Serialises entries to SRT format with the actual audio-position timestamps produced
-    // by SynthesisePerEntryAsync, replacing the original subtitle timings.
-    private static string ToSrtString(IReadOnlyList<SrtEntry> entries)
-    {
-        var sb = new StringBuilder(entries.Count * 80);
-        for (int i = 0; i < entries.Count; i++)
-        {
-            sb.AppendLine((i + 1).ToString());
-            sb.Append(FormatSrtTime(entries[i].StartMs));
-            sb.Append(" --> ");
-            sb.AppendLine(FormatSrtTime(entries[i].EndMs));
-            sb.AppendLine(entries[i].Text);
-            sb.AppendLine();
-        }
-        return sb.ToString();
-    }
-
-    private static string FormatSrtTime(int ms)
-    {
-        var ts = TimeSpan.FromMilliseconds(ms);
-        return $"{(int)ts.TotalHours:D2}:{ts.Minutes:D2}:{ts.Seconds:D2},{ts.Milliseconds:D3}";
     }
 
     // Groups consecutive entries into segments such that no gap between neighbours

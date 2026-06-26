@@ -211,32 +211,16 @@ public sealed class SrtToAzureTtsServiceTests
 
     // ── Error handling ────────────────────────────────────────────────────────
 
-    // The retry logic substitutes silence for any entry whose TTS call fails after
-    // MaxTtsRetries attempts, so SynthesiseAsync completes rather than propagating
-    // the engine exception. Tests below verify this "silent fallback" contract.
-
     [Fact]
-    public async Task SynthesiseAsync_CompletesWhenEngineAlwaysFails()
+    public async Task SynthesiseAsync_ThrowsWhenEngineFails()
     {
         var sut = MakeSut(out _, out _, out var engine);
         engine.SpeakSsmlAsync(
                 Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(),
                 Arg.Any<string>(), Arg.Any<CancellationToken>())
             .ThrowsAsync(new InvalidOperationException("Azure TTS cancelled"));
-        // Should not throw — silence is substituted for every failed entry.
-        await sut.SynthesiseAsync(MakeJob(), "key", "https://ep/");
-    }
-
-    [Fact]
-    public async Task SynthesiseAsync_StillUpdatesDbWhenEngineAlwaysFails()
-    {
-        var sut = MakeSut(out var repo, out _, out var engine);
-        engine.SpeakSsmlAsync(
-                Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(),
-                Arg.Any<string>(), Arg.Any<CancellationToken>())
-            .ThrowsAsync(new InvalidOperationException("Azure TTS cancelled"));
-        await sut.SynthesiseAsync(MakeJob(), "key", "https://ep/");
-        await repo.Received(1).UpdateAsync(Arg.Any<VideoJob>(), Arg.Any<CancellationToken>());
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => sut.SynthesiseAsync(MakeJob(), "key", "https://ep/"));
     }
 
     // ── SplitIntoSegments unit tests ──────────────────────────────────────────
