@@ -14,10 +14,10 @@ Download and install from https://dotnet.microsoft.com/download
 2. Extract to a permanent folder, e.g. `C:\tools\ffmpeg\bin`
 3. Add that folder to your system `PATH`, **or** pass `--ffmpeg "C:\tools\ffmpeg\bin\ffmpeg.exe"` on every CLI run
 
-### Python 3.11
+### Python 3.12
 Download from https://www.python.org/downloads/
 - During install, check **"Add Python to PATH"**
-- Python 3.9–3.12 all work; 3.11 is recommended for best compatibility with Whisper and Demucs
+- The install scripts require Python 3.12 (`py -3.12`)
 
 ### Azure CLI
 Required for authenticating with Azure OpenAI (translation step).
@@ -41,13 +41,13 @@ scripts\install-cuda.bat
 
 This will:
 1. Create a virtual environment named `bgtts-env` in the current directory
-2. Install Whisper (`openai-whisper`)
-3. Install PyTorch with CUDA 12.1 support
-4. Install Demucs
+2. Install PyTorch 2.5.1 with CUDA 12.4 support
+3. Install Demucs
+4. Install faster-whisper + CUDA runtime libraries
 
-> **Driver version:** the script targets CUDA 12.1 (`cu121`). If your NVIDIA driver is newer,
-> check https://pytorch.org/get-started/locally/ for the matching `--index-url` and edit the
-> script accordingly (e.g. `cu124` for CUDA 12.4).
+> **Driver version:** the script targets CUDA 12.4 (`cu124`), which requires Game Ready 550+ / Studio 555+ drivers.
+> It runs fine on newer CUDA runtimes (12.6, 12.8) — CUDA is backward-compatible.
+> PyTorch is pinned to 2.5.1 because 2.6+ requires `torchcodec`, which has no Windows build.
 
 ---
 
@@ -69,7 +69,7 @@ expect Demucs to take several minutes per minute of audio on a modern CPU.
 ```bat
 bgtts-env\Scripts\activate
 
-python -c "import whisper; print('Whisper OK')"
+python -c "import faster_whisper; print('faster-whisper OK')"
 python -c "import demucs; print('Demucs OK')"
 python -c "import torch; print('CUDA available:', torch.cuda.is_available())"
 ```
