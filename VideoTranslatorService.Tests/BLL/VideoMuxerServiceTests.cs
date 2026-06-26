@@ -90,7 +90,8 @@ public sealed class VideoMuxerServiceTests
     public async Task MuxAsync_CallsProcessRunnerWithFfmpegPath()
     {
         await _sut.MuxAsync(MakeJob(), "custom-ffmpeg", "/out", OneLang());
-        await _runner.Received(1).RunAsync("custom-ffmpeg", Arg.Any<string>(), Arg.Any<CancellationToken>());
+        // 1 multi-audio master + 1 per-language = 2 calls for OneLang()
+        await _runner.Received(2).RunAsync("custom-ffmpeg", Arg.Any<string>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]
@@ -107,7 +108,7 @@ public sealed class VideoMuxerServiceTests
     public async Task MuxAsync_ArgumentsContainLanguageMixedAudio()
     {
         await _sut.MuxAsync(MakeJob(), "ffmpeg", "/out", OneLang());
-        await _runner.Received(1).RunAsync(
+        await _runner.Received().RunAsync(
             Arg.Any<string>(),
             Arg.Is<string>(a => a.Contains("video_bg_mixed.wav")),
             Arg.Any<CancellationToken>());
@@ -117,7 +118,7 @@ public sealed class VideoMuxerServiceTests
     public async Task MuxAsync_ArgumentsContainOriginalSrtPath()
     {
         await _sut.MuxAsync(MakeJob(), "ffmpeg", "/out", OneLang());
-        await _runner.Received(1).RunAsync(
+        await _runner.Received().RunAsync(
             Arg.Any<string>(),
             Arg.Is<string>(a => a.Contains("video.srt")),
             Arg.Any<CancellationToken>());
@@ -137,7 +138,7 @@ public sealed class VideoMuxerServiceTests
     public async Task MuxAsync_ArgumentsContainFilterComplexWithApad()
     {
         await _sut.MuxAsync(MakeJob(), "ffmpeg", "/out", OneLang());
-        await _runner.Received(1).RunAsync(
+        await _runner.Received().RunAsync(
             Arg.Any<string>(),
             Arg.Is<string>(a => a.Contains("-filter_complex") && a.Contains("apad")),
             Arg.Any<CancellationToken>());
@@ -147,7 +148,7 @@ public sealed class VideoMuxerServiceTests
     public async Task MuxAsync_ArgumentsContainShortest()
     {
         await _sut.MuxAsync(MakeJob(), "ffmpeg", "/out", OneLang());
-        await _runner.Received(1).RunAsync(
+        await _runner.Received().RunAsync(
             Arg.Any<string>(),
             Arg.Is<string>(a => a.Contains("-shortest")),
             Arg.Any<CancellationToken>());
@@ -157,7 +158,7 @@ public sealed class VideoMuxerServiceTests
     public async Task MuxAsync_ArgumentsContainOriginalMetadataTitle()
     {
         await _sut.MuxAsync(MakeJob(), "ffmpeg", "/out", OneLang());
-        await _runner.Received(1).RunAsync(
+        await _runner.Received().RunAsync(
             Arg.Any<string>(),
             Arg.Is<string>(a => a.Contains("title=\"Original\"")),
             Arg.Any<CancellationToken>());
@@ -167,7 +168,7 @@ public sealed class VideoMuxerServiceTests
     public async Task MuxAsync_ArgumentsContainLanguageMetadataTitle()
     {
         await _sut.MuxAsync(MakeJob(), "ffmpeg", "/out", OneLang("Bulgarian"));
-        await _runner.Received(1).RunAsync(
+        await _runner.Received().RunAsync(
             Arg.Any<string>(),
             Arg.Is<string>(a => a.Contains("title=\"Bulgarian\"")),
             Arg.Any<CancellationToken>());
@@ -177,7 +178,7 @@ public sealed class VideoMuxerServiceTests
     public async Task MuxAsync_OriginalSubtitleTrackHasOriginalMetadata()
     {
         await _sut.MuxAsync(MakeJob(), "ffmpeg", "/out", OneLang());
-        await _runner.Received(1).RunAsync(
+        await _runner.Received().RunAsync(
             Arg.Any<string>(),
             Arg.Is<string>(a => a.Contains("-metadata:s:s:0 title=\"Original\"")),
             Arg.Any<CancellationToken>());
@@ -187,7 +188,7 @@ public sealed class VideoMuxerServiceTests
     public async Task MuxAsync_UsesMp4SubtitleCodecForMp4Output()
     {
         await _sut.MuxAsync(MakeJob(originalFileName: "video.mp4"), "ffmpeg", "/out", OneLang());
-        await _runner.Received(1).RunAsync(
+        await _runner.Received().RunAsync(
             Arg.Any<string>(),
             Arg.Is<string>(a => a.Contains("mov_text")),
             Arg.Any<CancellationToken>());
@@ -197,7 +198,7 @@ public sealed class VideoMuxerServiceTests
     public async Task MuxAsync_UsesMkvSubtitleCodecForMkvOutput()
     {
         await _sut.MuxAsync(MakeJob(originalFileName: "video.mkv"), "ffmpeg", "/out", OneLang());
-        await _runner.Received(1).RunAsync(
+        await _runner.Received().RunAsync(
             Arg.Any<string>(),
             Arg.Is<string>(a => a.Contains("-c:s srt")),
             Arg.Any<CancellationToken>());
@@ -207,9 +208,9 @@ public sealed class VideoMuxerServiceTests
     public async Task MuxAsync_OutputIsInOutputFolder()
     {
         await _sut.MuxAsync(MakeJob(), "ffmpeg", "/output", OneLang());
-        await _runner.Received(1).RunAsync(
+        await _runner.Received().RunAsync(
             Arg.Any<string>(),
-            Arg.Is<string>(a => a.Contains(Path.Combine("/output", "video.mp4"))),
+            Arg.Is<string>(a => a.Contains(Path.Combine("/output", "video_multiAudio.mp4"))),
             Arg.Any<CancellationToken>());
     }
 
@@ -263,7 +264,7 @@ public sealed class VideoMuxerServiceTests
     {
         var job = MakeJob();
         await _sut.MuxAsync(job, "ffmpeg", "/output", OneLang());
-        Assert.Equal(Path.Combine("/output", "video.mp4"), job.OutputFilePath);
+        Assert.Equal(Path.Combine("/output", "video_multiAudio.mp4"), job.OutputFilePath);
     }
 
     [Fact]
