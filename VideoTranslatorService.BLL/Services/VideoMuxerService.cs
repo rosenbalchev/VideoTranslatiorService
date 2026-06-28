@@ -40,7 +40,7 @@ public sealed class VideoMuxerService : IVideoMuxerService
         if (string.IsNullOrEmpty(job.SrtFilePath))
             throw new InvalidOperationException($"Job {job.Id} has no SrtFilePath set.");
 
-        Directory.CreateDirectory(outputFolder);
+        _fs.CreateDirectory(outputFolder);
 
         var ext           = Path.GetExtension(job.OriginalFileName).ToLowerInvariant();
         var baseName      = Path.GetFileNameWithoutExtension(job.OriginalFileName);
