@@ -1,0 +1,42 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!-- NuGet packaging -->
+    <IsPackable>true</IsPackable>
+    <PackageId>RB.VideoTranslator.BLL</PackageId>
+    <Version>1.0.0</Version>
+    <Authors>Rosen Balchev</Authors>
+    <Description>Business-logic library for the RB.VideoTranslator AI video translation pipeline. Includes pipeline orchestration, Azure TTS/OpenAI integration, and a DI extension for easy host setup.</Description>
+    <PackageTags>video;translation;azure;tts;openai;pipeline</PackageTags>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <RepositoryType>git</RepositoryType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Azure.AI.OpenAI" Version="2.*" />
+    <PackageReference Include="Azure.Identity" Version="1.*" />
+    <PackageReference Include="Microsoft.CognitiveServices.Speech" Version="1.*" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.*" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.*" />
+    <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.*" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\RB.VideoTranslator.Data\RB.VideoTranslator.Data.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="RB.VideoTranslator.Tests" />
+  </ItemGroup>
+
+  <!-- Copy Python tools to the consuming executable's output directory -->
+  <ItemGroup>
+    <Content Include="tools\**\*.py">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+</Project>
