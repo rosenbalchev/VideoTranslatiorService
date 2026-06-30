@@ -55,6 +55,9 @@ public static class ServiceCollectionExtensions
             return new AzureChatEngine(client.GetChatClient(opts.AzureOpenAiDeployment));
         });
 
+        // Register the pipeline runner for consumers
+        services.AddSingleton<IPipelineRunner, PipelineBootstrapper>();
+
         return services;
     }
 }
