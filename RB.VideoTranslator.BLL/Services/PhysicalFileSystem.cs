@@ -15,4 +15,6 @@ public sealed class PhysicalFileSystem : IFileSystem
         File.WriteAllTextAsync(path, content, Encoding.UTF8, ct);
 
     public Stream Create(string path) => File.Create(path);
+
+    public Stream OpenRead(string path) => File.OpenRead(path);
 }

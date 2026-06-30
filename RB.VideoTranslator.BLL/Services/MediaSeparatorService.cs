@@ -43,6 +43,18 @@ public sealed class MediaSeparatorService : IMediaSeparatorService
         if (!_fs.FileExists(audioPath))
             throw new FileNotFoundException($"ffmpeg did not produce expected audio output: {audioPath}");
 
+        // Probe the PCM WAV header to capture the original audio format.
+        // offset 22 = NumChannels (uint16), offset 24 = SampleRate (uint32).
+        var header = new byte[36];
+        await using (var wav = _fs.OpenRead(audioPath))
+            await wav.ReadExactlyAsync(header, ct);
+
+        job.AudioChannels   = BitConverter.ToUInt16(header, 22);
+        job.AudioSampleRate = (int)BitConverter.ToUInt32(header, 24);
+        _logger.LogInformation(
+            "Input audio: {Ch}ch @ {Rate}Hz",
+            job.AudioChannels, job.AudioSampleRate);
+
         _logger.LogInformation("Stripping audio from video {Source}", job.ProcessingVideoPath);
         await _processRunner.RunAsync(
             ffmpegPath,

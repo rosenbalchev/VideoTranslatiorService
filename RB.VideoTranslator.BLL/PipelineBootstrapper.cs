@@ -37,12 +37,36 @@ public sealed class PipelineBootstrapper : IPipelineRunner
         _options = sp.GetRequiredService<IOptions<PipelineOptions>>().Value;
 
         // Initialize database
-        await sp.GetRequiredService<AppDbContext>().Database.EnsureCreatedAsync();
+        var db = sp.GetRequiredService<AppDbContext>();
+        await db.Database.EnsureCreatedAsync();
+        await MigrateSchemaAsync(db);
 
         // Setup folder structure and normalize configuration
         SetupFolders();
 
         _logger.LogInformation("Pipeline initialized successfully");
+    }
+
+    // Adds new columns to the VideoJobs table if they don't exist yet.
+    // EnsureCreatedAsync creates the table on first run but never alters existing schemas,
+    // so we apply idempotent ALTER TABLE statements for any column added post-initial-creation.
+    private static async Task MigrateSchemaAsync(AppDbContext db)
+    {
+        foreach (var sql in new[]
+        {
+            "ALTER TABLE VideoJobs ADD COLUMN AudioChannels INTEGER NOT NULL DEFAULT 2",
+            "ALTER TABLE VideoJobs ADD COLUMN AudioSampleRate INTEGER NOT NULL DEFAULT 44100",
+        })
+        {
+            try
+            {
+                await db.Database.ExecuteSqlRawAsync(sql);
+            }
+            catch (Exception ex) when (ex.Message.Contains("duplicate column name", StringComparison.OrdinalIgnoreCase))
+            {
+                // Column already exists on subsequent runs — expected, not an error.
+            }
+        }
     }
 
     /// <summary>

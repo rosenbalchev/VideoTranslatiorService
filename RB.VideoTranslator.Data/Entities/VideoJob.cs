@@ -36,6 +36,11 @@ public class VideoJob
     // Step 7 — final video
     public string? OutputFilePath { get; set; }
 
+    // Input audio format — probed from the extracted WAV during media separation.
+    // Used to match the dubbed track's channel count and sample rate to the original.
+    public int AudioChannels   { get; set; } = 2;
+    public int AudioSampleRate { get; set; } = 44100;
+
     public JobState State { get; set; } = JobState.Queued;
     public string? ErrorMessage { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;

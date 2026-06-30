@@ -41,10 +41,14 @@ public sealed class AudioMixerService : IAudioMixerService
             "Mixing {Bed} + {Voice} → {Out}",
             job.VoiceRemovedAudioPath, job.AzureTtsAudioPath, outputWav);
 
+        // Cap at stereo: even for surround sources the dubbed track is at most stereo,
+        // so downmix to match rather than produce an asymmetric mix.
+        var ac = Math.Clamp(job.AudioChannels, 1, 2);
+
         await _runner.RunAsync(
             ffmpegPath,
             $"-y -i \"{job.VoiceRemovedAudioPath}\" -i \"{job.AzureTtsAudioPath}\" " +
-            $"-filter_complex \"amix=inputs=2:duration=longest:normalize=0\" -ac 2 \"{outputWav}\"",
+            $"-filter_complex \"amix=inputs=2:duration=longest:normalize=0\" -ac {ac} \"{outputWav}\"",
             ct);
 
         if (!_fs.FileExists(outputWav))

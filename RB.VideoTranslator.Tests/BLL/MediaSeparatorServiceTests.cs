@@ -21,11 +21,27 @@ public sealed class MediaSeparatorServiceTests
         _processRunner = Substitute.For<IProcessRunner>();
         _fs = Substitute.For<IFileSystem>();
         _fs.FileExists(Arg.Any<string>()).Returns(true);
+        _fs.OpenRead(Arg.Any<string>()).Returns(_ => MakeWavHeaderStream());
         _sut = new MediaSeparatorService(
             _repo,
             NullLogger<MediaSeparatorService>.Instance,
             _processRunner,
             _fs);
+    }
+
+    // Minimal valid WAV header: 36 bytes covers all fields we probe (channels @22, rate @24).
+    private static MemoryStream MakeWavHeaderStream(ushort channels = 2, uint sampleRate = 44100)
+    {
+        var header = new byte[36];
+        "RIFF"u8.CopyTo(header);
+        BitConverter.GetBytes(100u).CopyTo(header, 4);
+        "WAVE"u8.CopyTo(header.AsSpan(8));
+        "fmt "u8.CopyTo(header.AsSpan(12));
+        BitConverter.GetBytes(16u).CopyTo(header, 16);
+        BitConverter.GetBytes((ushort)1).CopyTo(header, 20);       // PCM
+        BitConverter.GetBytes(channels).CopyTo(header, 22);
+        BitConverter.GetBytes(sampleRate).CopyTo(header, 24);
+        return new MemoryStream(header);
     }
 
     private static VideoJob MakeJob(string? processingVideoPath = "/proc/video.mp4") => new()
@@ -137,5 +153,42 @@ public sealed class MediaSeparatorServiceTests
         try { await _sut.SeparateAsync(MakeJob()); } catch (FileNotFoundException) { }
 
         await _repo.DidNotReceive().UpdateAsync(Arg.Any<VideoJob>(), Arg.Any<CancellationToken>());
+    }
+
+    // ── Audio format probing ───────────────────────────────────────────────────
+
+    [Fact]
+    public async Task SeparateAsync_SetsAudioChannelsFromWavHeader()
+    {
+        _fs.OpenRead(Arg.Any<string>()).Returns(_ => MakeWavHeaderStream(channels: 2));
+        var job = MakeJob();
+        await _sut.SeparateAsync(job);
+        Assert.Equal(2, job.AudioChannels);
+    }
+
+    [Fact]
+    public async Task SeparateAsync_DetectsMonoAudio()
+    {
+        _fs.OpenRead(Arg.Any<string>()).Returns(_ => MakeWavHeaderStream(channels: 1));
+        var job = MakeJob();
+        await _sut.SeparateAsync(job);
+        Assert.Equal(1, job.AudioChannels);
+    }
+
+    [Fact]
+    public async Task SeparateAsync_SetsSampleRateFromWavHeader()
+    {
+        _fs.OpenRead(Arg.Any<string>()).Returns(_ => MakeWavHeaderStream(sampleRate: 22050));
+        var job = MakeJob();
+        await _sut.SeparateAsync(job);
+        Assert.Equal(22050, job.AudioSampleRate);
+    }
+
+    [Fact]
+    public async Task SeparateAsync_DefaultSampleRateIs44100()
+    {
+        var job = MakeJob();
+        await _sut.SeparateAsync(job);
+        Assert.Equal(44100, job.AudioSampleRate);
     }
 }

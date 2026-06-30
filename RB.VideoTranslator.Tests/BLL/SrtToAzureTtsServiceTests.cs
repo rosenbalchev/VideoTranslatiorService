@@ -318,9 +318,10 @@ public sealed class SrtToAzureTtsServiceTests
     [Fact]
     public void MakeSilenceWav_DataChunkSizeMatchesDuration()
     {
-        var wav = SrtToAzureTtsService.MakeSilenceWav(500);
+        // 500ms @ 44100 Hz 16-bit mono = 22050 samples × 2 bytes = 44100 bytes
+        var wav      = SrtToAzureTtsService.MakeSilenceWav(500);
         var dataSize = BitConverter.ToUInt32(wav, 40);
-        Assert.Equal((uint)(44100 / 2 * 2), dataSize); // 500ms → 22050 samples × 2 bytes
+        Assert.Equal(44100u, dataSize);
     }
 
     // ── ParseSrt unit tests ───────────────────────────────────────────────────
@@ -544,5 +545,171 @@ public sealed class SrtToAzureTtsServiceTests
     {
         var result = SrtToAzureTtsService.ConcatenateWav([MakeWav(4), MakeWav(6)]);
         Assert.Equal(10u, BitConverter.ToUInt32(result, 40)); // 4 + 6 PCM bytes
+    }
+
+    [Fact]
+    public void ConcatenateWav_EmptyListReturnsEmptyArray()
+    {
+        Assert.Empty(SrtToAzureTtsService.ConcatenateWav([]));
+    }
+
+    // ── MakeSilenceWav / GetWavDurationMs round-trip ──────────────────────────
+
+    [Theory]
+    [InlineData(100,  44100)]
+    [InlineData(1000, 44100)]
+    [InlineData(4400, 44100)]
+    [InlineData(2500, 44100)]
+    [InlineData(1000, 22050)] // Azure may return 22 kHz depending on voice
+    [InlineData(4400, 22050)]
+    [InlineData(1000, 24000)]
+    public void GetWavDurationMs_RoundTripsWithMakeSilenceWav(int durationMs, int sampleRate)
+    {
+        // Duration read back from the header must match what was requested.
+        // Integer-division rounding causes at most 1 ms error per chunk.
+        var wav    = SrtToAzureTtsService.MakeSilenceWav(durationMs, sampleRate);
+        var actual = SrtToAzureTtsService.GetWavDurationMs(wav);
+        Assert.InRange(actual, durationMs - 1, durationMs);
+    }
+
+    [Fact]
+    public void MakeSilenceWav_22050Hz_HasCorrectSampleRateInHeader()
+    {
+        var wav = SrtToAzureTtsService.MakeSilenceWav(1000, sampleRate: 22050);
+        var sampleRateInHeader = BitConverter.ToUInt32(wav, 24);
+        Assert.Equal(22050u, sampleRateInHeader);
+    }
+
+    [Fact]
+    public void MakeSilenceWav_22050Hz_HasCorrectByteRateInHeader()
+    {
+        var wav = SrtToAzureTtsService.MakeSilenceWav(1000, sampleRate: 22050);
+        var byteRateInHeader = BitConverter.ToUInt32(wav, 28);
+        Assert.Equal(44100u, byteRateInHeader); // 22050 × 1 ch × 2 bytes/sample
+    }
+
+    [Fact]
+    public void GetWavDurationMs_ReadsFormatFromHeaderNotHardcoded()
+    {
+        // A 22050 Hz WAV for 1000ms must report 1000ms, not 500ms (which would happen
+        // if the code hardcoded 44100 Hz).
+        var wav    = SrtToAzureTtsService.MakeSilenceWav(1000, sampleRate: 22050);
+        var actual = SrtToAzureTtsService.GetWavDurationMs(wav);
+        Assert.InRange(actual, 999, 1000);
+    }
+
+    // ── UpmixMonoToStereo unit tests ──────────────────────────────────────────
+
+    [Fact]
+    public void UpmixMonoToStereo_SetsChannelCountToTwo()
+    {
+        var mono   = SrtToAzureTtsService.MakeSilenceWav(100);
+        var stereo = SrtToAzureTtsService.UpmixMonoToStereo(mono);
+        Assert.Equal(2, (int)BitConverter.ToUInt16(stereo, 22));
+    }
+
+    [Fact]
+    public void UpmixMonoToStereo_PreservesSampleRate()
+    {
+        var mono   = SrtToAzureTtsService.MakeSilenceWav(100, sampleRate: 22050);
+        var stereo = SrtToAzureTtsService.UpmixMonoToStereo(mono);
+        Assert.Equal(22050u, BitConverter.ToUInt32(stereo, 24));
+    }
+
+    [Fact]
+    public void UpmixMonoToStereo_DoublesDataSize()
+    {
+        var mono       = SrtToAzureTtsService.MakeSilenceWav(100);
+        var monoData   = BitConverter.ToUInt32(mono, 40);
+        var stereo     = SrtToAzureTtsService.UpmixMonoToStereo(mono);
+        var stereoData = BitConverter.ToUInt32(stereo, 40);
+        Assert.Equal(monoData * 2, stereoData);
+    }
+
+    [Fact]
+    public void UpmixMonoToStereo_HasCorrectByteRate()
+    {
+        // 44100 Hz stereo 16-bit → 44100 × 2 × 2 = 176400 bytes/sec
+        var mono   = SrtToAzureTtsService.MakeSilenceWav(100);
+        var stereo = SrtToAzureTtsService.UpmixMonoToStereo(mono);
+        Assert.Equal(176400u, BitConverter.ToUInt32(stereo, 28));
+    }
+
+    [Fact]
+    public void UpmixMonoToStereo_DuplicatesSamplesToBothChannels()
+    {
+        // Build a mono WAV with known PCM data (4 bytes = 2 samples of known value).
+        var mono = MakeWav(4);
+        mono[44] = 0x11; mono[45] = 0x22; // sample 0
+        mono[46] = 0x33; mono[47] = 0x44; // sample 1
+
+        var stereo = SrtToAzureTtsService.UpmixMonoToStereo(mono);
+
+        // Each sample is duplicated to L and R.
+        Assert.Equal(0x11, stereo[44]); Assert.Equal(0x22, stereo[45]); // sample 0 L
+        Assert.Equal(0x11, stereo[46]); Assert.Equal(0x22, stereo[47]); // sample 0 R
+        Assert.Equal(0x33, stereo[48]); Assert.Equal(0x44, stereo[49]); // sample 1 L
+        Assert.Equal(0x33, stereo[50]); Assert.Equal(0x44, stereo[51]); // sample 1 R
+    }
+
+    [Fact]
+    public void UpmixMonoToStereo_DurationUnchanged()
+    {
+        var mono   = SrtToAzureTtsService.MakeSilenceWav(500);
+        var stereo = SrtToAzureTtsService.UpmixMonoToStereo(mono);
+        Assert.Equal(
+            SrtToAzureTtsService.GetWavDurationMs(mono),
+            SrtToAzureTtsService.GetWavDurationMs(stereo));
+    }
+
+    // ── Channel-aware upmix integration tests ────────────────────────────────
+
+    [Fact]
+    public async Task SynthesiseAsync_ProducesStereoOutputWhenTtsIsMonoAndInputIsStereo()
+    {
+        // FakeEngineWav is mono; job defaults to AudioChannels=2 → must upmix to stereo.
+        var capturedWav = new MemoryStream();
+        var sut = MakeSut(out _, out var fs, out _);
+        fs.Create(Arg.Any<string>()).Returns(capturedWav);
+
+        await sut.SynthesiseAsync(MakeJob(), "key", "https://ep/");
+
+        var bytes    = capturedWav.ToArray();
+        var channels = BitConverter.ToUInt16(bytes, 22);
+        Assert.Equal(2, (int)channels);
+    }
+
+    [Fact]
+    public async Task SynthesiseAsync_KeepsMonoOutputWhenInputVideoIsMono()
+    {
+        // Mono source video → mono TTS stays mono (no upmix needed).
+        var capturedWav = new MemoryStream();
+        var sut = MakeSut(out _, out var fs, out _);
+        fs.Create(Arg.Any<string>()).Returns(capturedWav);
+
+        var job = MakeJob();
+        job.AudioChannels = 1;
+        await sut.SynthesiseAsync(job, "key", "https://ep/");
+
+        var bytes    = capturedWav.ToArray();
+        var channels = BitConverter.ToUInt16(bytes, 22);
+        Assert.Equal(1, (int)channels);
+    }
+
+    [Fact]
+    public async Task SynthesiseAsync_ProducesStereoOutputForSurroundInputVideo()
+    {
+        // 5.1 source video — dubbed track capped at stereo (not 6ch).
+        var capturedWav = new MemoryStream();
+        var sut = MakeSut(out _, out var fs, out _);
+        fs.Create(Arg.Any<string>()).Returns(capturedWav);
+
+        var job = MakeJob();
+        job.AudioChannels = 6; // 5.1
+        await sut.SynthesiseAsync(job, "key", "https://ep/");
+
+        var bytes    = capturedWav.ToArray();
+        var channels = BitConverter.ToUInt16(bytes, 22);
+        Assert.Equal(2, (int)channels); // capped at stereo, not 6
     }
 }

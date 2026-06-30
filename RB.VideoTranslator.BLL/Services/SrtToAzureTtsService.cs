@@ -80,13 +80,11 @@ public sealed class SrtToAzureTtsService : ISrtToAzureTtsService
             "Subtitle avg pace: {Cps:F1} chars/sec. SSML: {Ssml}",
             voiceName, lang, job.TranslatedSrtFilePath, entries.Count, charsPerSecond, ssmlPath);
 
-        // One TTS call per subtitle entry guarantees each entry's leading silence is
-        // derived from its absolute timestamp — no within-segment drift.
-        var (audioData, syncedEntries) = await SynthesisePerEntryAsync(entries, endpointUrl, subscriptionKey, voiceName, lang, charsPerSecond, ct);
-
-        // Overwrite the translated SRT with timing-adjusted timestamps that match actual
-        // TTS audio positions so embedded subtitles stay in sync with the dubbed track.
-        await _fs.WriteAllTextAsync(job.TranslatedSrtFilePath, ToSrtString(syncedEntries), ct);
+        // One TTS call per subtitle entry. Leading silence per entry is derived from the
+        // absolute original timestamp so the audio track aligns with the source video.
+        // The translated SRT is NOT rewritten — subtitle display times are kept identical
+        // to the original so all language tracks share the same visual timing.
+        var audioData = await SynthesisePerEntryAsync(entries, endpointUrl, subscriptionKey, voiceName, lang, charsPerSecond, job.AudioChannels, ct);
 
         var outputWav = Path.Combine(job.ProcessingFolderPath, $"{baseName}_azure_tts.wav");
         await using var fileStream = _fs.Create(outputWav);
@@ -100,45 +98,41 @@ public sealed class SrtToAzureTtsService : ISrtToAzureTtsService
     }
 
     // ── Per-entry synthesis ───────────────────────────────────────────────────
-    // One TTS call per subtitle entry. Each resulting WAV is padded with silence
-    // to exactly fill the entry's declared window. Leading silence before each
-    // entry is computed from the absolute subtitle timestamp so there is no
-    // within-segment drift regardless of how fast or slow TTS speaks.
+    // One TTS call per subtitle entry. Leading silence is computed from the absolute
+    // original timestamp so the audio track aligns with the source video.
+    // When TTS audio overruns its window, the excess is logged and curMs advances
+    // accordingly; the next entry's leading silence absorbs the difference.
 
     private const int MaxTtsRetries = 3;
 
-    private async Task<(byte[] Audio, List<SrtEntry> SyncedEntries)> SynthesisePerEntryAsync(
+    private async Task<byte[]> SynthesisePerEntryAsync(
         IReadOnlyList<SrtEntry> entries,
         string endpointUrl,
         string subscriptionKey,
         string voiceName,
         string lang,
         double charsPerSecond,
+        int inputAudioChannels,
         CancellationToken ct)
     {
         _logger.LogInformation("Synthesising {Count} entries one-by-one for precise sync", entries.Count);
 
-        var chunks        = new List<byte[]>(entries.Count * 2);
-        var syncedEntries = new List<SrtEntry>(entries.Count);
-        var curMs         = 0;
+        // Phase 1: TTS calls — collect all audio and detect the actual output format
+        // from the first valid chunk so silence chunks always match.
+        var rawAudio       = new byte[entries.Count][];
+        var sampleRate     = 44100;
+        var channels       = 1;
+        var bitsPerSample  = 16;
+        var formatDetected = false;
 
         for (int i = 0; i < entries.Count; i++)
         {
             ct.ThrowIfCancellationRequested();
 
-            var entry         = entries[i];
-            var leadingMs     = Math.Max(0, entry.StartMs - curMs);
-            var expectedMs    = entry.EndMs - entry.StartMs;
-            // True audio start after any leading silence — equals Math.Max(curMs, entry.StartMs).
-            // Tracking this separately prevents curMs from being reset backwards when a prior
-            // entry overruns and the next entry's leadingMs is trimmed to zero.
-            var actualStartMs = curMs + leadingMs;
-
-            if (leadingMs > 0)
-                chunks.Add(MakeSilenceWav(leadingMs));
-
-            var rate = SpeechRateFor(entry.Text, expectedMs, charsPerSecond);
-            var ssml = BuildEntrySsml(entry.Text, voiceName, lang, rate);
+            var entry      = entries[i];
+            var expectedMs = entry.EndMs - entry.StartMs;
+            var rate       = SpeechRateFor(entry.Text, expectedMs, charsPerSecond);
+            var ssml       = BuildEntrySsml(entry.Text, voiceName, lang, rate);
 
             _logger.LogInformation(
                 "TTS entry {I}/{Total} [{Start}→{End}ms] rate={Rate:F0}%",
@@ -172,31 +166,60 @@ public sealed class SrtToAzureTtsService : ISrtToAzureTtsService
                     }
                 }
             }
-            audio ??= [];
 
-            // spokenMs = audio duration written for this entry (before any silence padding).
-            // srtEndMs = when the voice stops speaking — drives the synced SRT timestamp.
+            rawAudio[i] = audio ?? [];
+
+            if (!formatDetected && IsValidRiffWav(rawAudio[i]))
+            {
+                sampleRate    = (int)BitConverter.ToUInt32(rawAudio[i], 24);
+                channels      = BitConverter.ToUInt16(rawAudio[i], 22);
+                bitsPerSample = BitConverter.ToUInt16(rawAudio[i], 34);
+                formatDetected = true;
+            }
+        }
+
+        // Upmix mono TTS to stereo when the source video is stereo or surround.
+        // Capped at stereo: distributing dialogue across 5.1/7.1 by sample-duplication
+        // is unnatural — front L/R stereo is the conventional format for dubbed dialogue.
+        var targetChannels = channels == 1 && inputAudioChannels >= 2 ? 2 : channels;
+
+        _logger.LogInformation(
+            "TTS audio format: {Rate}Hz {In}ch {Bits}-bit → producing {Out}ch WAV",
+            sampleRate, channels, bitsPerSample, targetChannels);
+
+        // Phase 2: assembly — interleave silence in the target format.
+        var chunks = new List<byte[]>(entries.Count * 2);
+        var curMs  = 0;
+
+        for (int i = 0; i < entries.Count; i++)
+        {
+            var entry      = entries[i];
+            var leadingMs  = Math.Max(0, entry.StartMs - curMs);
+            var expectedMs = entry.EndMs - entry.StartMs;
+
+            if (leadingMs > 0)
+                chunks.Add(MakeSilenceWav(leadingMs, sampleRate, targetChannels, bitsPerSample));
+
             int spokenMs;
-            int srtEndMs;
+            var audio = rawAudio[i];
             if (IsValidRiffWav(audio))
             {
-                chunks.Add(audio);
-                var actualMs = GetWavDurationMs(audio);
-                srtEndMs     = actualStartMs + actualMs;
+                var finalAudio = targetChannels > channels ? UpmixMonoToStereo(audio) : audio;
+                chunks.Add(finalAudio);
+                var actualMs = GetWavDurationMs(audio); // duration unchanged by upmix
                 var padMs    = expectedMs - actualMs;
                 if (padMs > 50)
                 {
-                    chunks.Add(MakeSilenceWav(padMs));
-                    spokenMs = expectedMs; // padded to fill the declared window
+                    chunks.Add(MakeSilenceWav(padMs, sampleRate, targetChannels, bitsPerSample));
+                    spokenMs = expectedMs;
                 }
                 else
                 {
-                    spokenMs = actualMs; // audio ran to or past the window boundary
+                    spokenMs = actualMs;
 
                     if (actualMs > expectedMs + 100)
                         _logger.LogWarning(
-                            "Entry {I}/{Total} TTS audio ({Actual}ms) overran its window ({Expected}ms) by {Over}ms — " +
-                            "next entry's leading silence reduced accordingly",
+                            "Entry {I}/{Total} TTS audio ({Actual}ms) overran its window ({Expected}ms) by {Over}ms",
                             i + 1, entries.Count, actualMs, expectedMs, actualMs - expectedMs);
                 }
             }
@@ -205,17 +228,14 @@ public sealed class SrtToAzureTtsService : ISrtToAzureTtsService
                 _logger.LogWarning(
                     "Entry {I}/{Total} returned invalid audio — substituting {Ms}ms silence",
                     i + 1, entries.Count, expectedMs);
-                chunks.Add(MakeSilenceWav(Math.Max(expectedMs, 1)));
+                chunks.Add(MakeSilenceWav(Math.Max(expectedMs, 1), sampleRate, targetChannels, bitsPerSample));
                 spokenMs = expectedMs;
-                srtEndMs = actualStartMs + expectedMs;
             }
 
-            syncedEntries.Add(new SrtEntry(actualStartMs, srtEndMs, entry.Text));
-            // Advance from actualStartMs so curMs is never reset backwards by an overrun.
-            curMs = actualStartMs + spokenMs;
+            curMs = Math.Max(curMs, entry.StartMs) + spokenMs;
         }
 
-        return (ConcatenateWav(chunks), syncedEntries);
+        return ConcatenateWav(chunks);
     }
 
     private static string BuildEntrySsml(string text, string voiceName, string lang, double rate)
@@ -229,29 +249,6 @@ public sealed class SrtToAzureTtsService : ISrtToAzureTtsService
                $"xmlns:mstts=\"http://www.w3.org/2001/mstts\" xml:lang=\"{lang}\">" +
                $"<voice name=\"{voiceName}\">{content}</voice>" +
                $"</speak>";
-    }
-
-    // Serialises entries to SRT format with the actual audio-position timestamps produced
-    // by SynthesisePerEntryAsync, replacing the original subtitle timings.
-    private static string ToSrtString(IReadOnlyList<SrtEntry> entries)
-    {
-        var sb = new StringBuilder(entries.Count * 80);
-        for (int i = 0; i < entries.Count; i++)
-        {
-            sb.AppendLine((i + 1).ToString());
-            sb.Append(FormatSrtTime(entries[i].StartMs));
-            sb.Append(" --> ");
-            sb.AppendLine(FormatSrtTime(entries[i].EndMs));
-            sb.AppendLine(entries[i].Text);
-            sb.AppendLine();
-        }
-        return sb.ToString();
-    }
-
-    private static string FormatSrtTime(int ms)
-    {
-        var ts = TimeSpan.FromMilliseconds(ms);
-        return $"{(int)ts.TotalHours:D2}:{ts.Minutes:D2}:{ts.Seconds:D2},{ts.Milliseconds:D3}";
     }
 
     // Groups consecutive entries into segments such that no gap between neighbours
@@ -378,13 +375,58 @@ public sealed class SrtToAzureTtsService : ISrtToAzureTtsService
 
     // ── WAV utilities ─────────────────────────────────────────────────────────
 
-    // Generates a silent PCM WAV matching the Azure TTS output format (44100 Hz, 16-bit, mono).
-    internal static byte[] MakeSilenceWav(int durationMs)
+    // Upmixes a mono PCM WAV to stereo by duplicating each sample into both channels.
+    // Works for any bit depth. The output always carries a standard 44-byte header.
+    internal static byte[] UpmixMonoToStereo(byte[] monoWav)
     {
-        const int sampleRate     = 44100;
-        const int channels       = 1;
-        const int bitsPerSample  = 16;
-        const int bytesPerSample = bitsPerSample / 8;
+        var monoDataOffset  = FindPcmDataOffset(monoWav);
+        var monoDataSize    = (int)BitConverter.ToUInt32(monoWav, monoDataOffset - 4);
+        var sampleRate      = (int)BitConverter.ToUInt32(monoWav, 24);
+        var bitsPerSample   = (int)BitConverter.ToUInt16(monoWav, 34);
+        var bytesPerSample  = bitsPerSample / 8;
+        const int stereoChannels = 2;
+        var stereoDataSize  = monoDataSize * stereoChannels;
+
+        var result = new byte[44 + stereoDataSize];
+
+        "RIFF"u8.CopyTo(result);
+        BitConverter.GetBytes((uint)(36 + stereoDataSize)).CopyTo(result, 4);
+        "WAVE"u8.CopyTo(result.AsSpan(8));
+        "fmt "u8.CopyTo(result.AsSpan(12));
+        BitConverter.GetBytes(16u).CopyTo(result, 16);
+        BitConverter.GetBytes((ushort)1).CopyTo(result, 20);                              // PCM
+        BitConverter.GetBytes((ushort)stereoChannels).CopyTo(result, 22);
+        BitConverter.GetBytes((uint)sampleRate).CopyTo(result, 24);
+        BitConverter.GetBytes((uint)(sampleRate * stereoChannels * bytesPerSample)).CopyTo(result, 28);
+        BitConverter.GetBytes((ushort)(stereoChannels * bytesPerSample)).CopyTo(result, 32);
+        BitConverter.GetBytes((ushort)bitsPerSample).CopyTo(result, 34);
+        "data"u8.CopyTo(result.AsSpan(36));
+        BitConverter.GetBytes((uint)stereoDataSize).CopyTo(result, 40);
+
+        // Write each mono sample to both L and R channels.
+        var monoSpan   = monoWav.AsSpan(monoDataOffset, monoDataSize);
+        var stereoSpan = result.AsSpan(44);
+        for (int i = 0; i < monoSpan.Length; i += bytesPerSample)
+        {
+            var sample = monoSpan.Slice(i, bytesPerSample);
+            sample.CopyTo(stereoSpan.Slice(i * stereoChannels));                           // L
+            sample.CopyTo(stereoSpan.Slice(i * stereoChannels + bytesPerSample));          // R
+        }
+
+        return result;
+    }
+
+    // Generates a silent PCM WAV. Format parameters default to 44100 Hz 16-bit mono
+    // but are overridden in SynthesisePerEntryAsync once the actual TTS output format
+    // is detected from the first returned audio chunk.
+    internal static byte[] MakeSilenceWav(
+        int durationMs,
+        int sampleRate    = 44100,
+        int channels      = 1,
+        int bitsPerSample = 16)
+    {
+        var bytesPerSample = bitsPerSample / 8;
+        var byteRate       = sampleRate * channels * bytesPerSample;
         // Use long arithmetic — int × int overflows for gaps longer than ~48 seconds.
         var numSamples = (long)sampleRate * durationMs / 1000;
         var dataSize   = (int)(numSamples * channels * bytesPerSample);
@@ -395,10 +437,10 @@ public sealed class SrtToAzureTtsService : ISrtToAzureTtsService
         "WAVE"u8.CopyTo(wav.AsSpan(8));
         "fmt "u8.CopyTo(wav.AsSpan(12));
         BitConverter.GetBytes(16u).CopyTo(wav, 16);
-        BitConverter.GetBytes((ushort)1).CopyTo(wav, 20);                         // PCM
+        BitConverter.GetBytes((ushort)1).CopyTo(wav, 20);                    // PCM
         BitConverter.GetBytes((ushort)channels).CopyTo(wav, 22);
         BitConverter.GetBytes((uint)sampleRate).CopyTo(wav, 24);
-        BitConverter.GetBytes((uint)(sampleRate * channels * bytesPerSample)).CopyTo(wav, 28);
+        BitConverter.GetBytes((uint)byteRate).CopyTo(wav, 28);
         BitConverter.GetBytes((ushort)(channels * bytesPerSample)).CopyTo(wav, 32);
         BitConverter.GetBytes((ushort)bitsPerSample).CopyTo(wav, 34);
         "data"u8.CopyTo(wav.AsSpan(36));
@@ -415,13 +457,15 @@ public sealed class SrtToAzureTtsService : ISrtToAzureTtsService
             && data[8] == 'W' && data[9] == 'A' && data[10] == 'V' && data[11] == 'E';
     }
 
-    // Returns the duration of a valid WAV in milliseconds by reading the data chunk size.
-    // Assumes 44100 Hz, 16-bit, mono (88200 bytes/sec) — matches MakeSilenceWav and Azure TTS output.
-    private static int GetWavDurationMs(byte[] wav)
+    // Returns the duration of a valid WAV in milliseconds.
+    // Reads the byte rate from the WAV fmt chunk (offset 28) rather than hardcoding a
+    // sample rate, so the calculation is correct regardless of the format Azure returns.
+    internal static int GetWavDurationMs(byte[] wav)
     {
         var dataOffset = FindPcmDataOffset(wav);
         var dataSize   = BitConverter.ToUInt32(wav, dataOffset - 4);
-        return (int)(dataSize * 1000L / 88200);
+        var byteRate   = BitConverter.ToUInt32(wav, 28);
+        return byteRate > 0 ? (int)(dataSize * 1000L / byteRate) : 0;
     }
 
     // Finds the byte offset where PCM data begins (past the "data" chunk header).
@@ -437,6 +481,7 @@ public sealed class SrtToAzureTtsService : ISrtToAzureTtsService
 
     internal static byte[] ConcatenateWav(IReadOnlyList<byte[]> chunks)
     {
+        if (chunks.Count == 0) return [];
         if (chunks.Count == 1) return chunks[0];
 
         var dataOffsets = chunks.Select(FindPcmDataOffset).ToArray();

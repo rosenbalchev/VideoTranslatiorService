@@ -140,4 +140,43 @@ public sealed class AudioMixerServiceTests
                .ThrowsAsync(new InvalidOperationException("ffmpeg error"));
         await Assert.ThrowsAsync<InvalidOperationException>(() => _sut.MixAsync(MakeJob()));
     }
+
+    // ── Channel-aware -ac flag ────────────────────────────────────────────────
+
+    [Fact]
+    public async Task MixAsync_UsesStereoAcForStereoInput()
+    {
+        var job = MakeJob();
+        job.AudioChannels = 2;
+        await _sut.MixAsync(job);
+        await _runner.Received(1).RunAsync(
+            Arg.Any<string>(),
+            Arg.Is<string>(a => a.Contains("-ac 2")),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task MixAsync_UsesMonoAcForMonoInput()
+    {
+        var job = MakeJob();
+        job.AudioChannels = 1;
+        await _sut.MixAsync(job);
+        await _runner.Received(1).RunAsync(
+            Arg.Any<string>(),
+            Arg.Is<string>(a => a.Contains("-ac 1")),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task MixAsync_CapsAcAtStereoForSurroundInput()
+    {
+        // 5.1 surround source — dubbed track is capped at stereo
+        var job = MakeJob();
+        job.AudioChannels = 6;
+        await _sut.MixAsync(job);
+        await _runner.Received(1).RunAsync(
+            Arg.Any<string>(),
+            Arg.Is<string>(a => a.Contains("-ac 2")),
+            Arg.Any<CancellationToken>());
+    }
 }
