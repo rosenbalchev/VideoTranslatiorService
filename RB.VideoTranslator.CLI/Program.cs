@@ -304,6 +304,7 @@ internal sealed class Program
             : Path.Combine(tempOpts.WorkingFolderPath, "videotranslator.db");
 
         return new ServiceCollection()
+            .AddSingleton<IConfiguration>(configuration)
             .AddLogging(b => b
                 .AddSimpleConsole(opts => opts.TimestampFormat = "HH:mm:ss ")
                 .SetMinimumLevel(LogLevel.Information)
