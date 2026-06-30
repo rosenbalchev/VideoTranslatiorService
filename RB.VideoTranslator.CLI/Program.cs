@@ -261,13 +261,21 @@ internal sealed class Program
 
             var orchestrator = sp.GetRequiredService<IPipelineOrchestrator>();
 
+            // Process jobs sequentially (one at a time) to ensure files are processed one by one
             foreach (var job in pending)
             {
                 log.LogInformation(
                     "=== Job {Id} | {File} | state: {State} — attempting to advance to next step ===",
                     job.Id, job.OriginalFileName, job.State);
 
-                await orchestrator.AdvanceAsync(job);
+                try
+                {
+                    await orchestrator.AdvanceAsync(job);
+                }
+                catch (Exception ex)
+                {
+                    log.LogError(ex, "Job {Id} failed during advancement", job.Id);
+                }
             }
         });
 
