@@ -1,0 +1,6 @@
+<Solution>
+  <Project Path="RB.VideoTranslator.Data\RB.VideoTranslator.Data.csproj" />
+  <Project Path="RB.VideoTranslator.BLL\RB.VideoTranslator.BLL.csproj" />
+  <Project Path="RB.VideoTranslator.CLI\RB.VideoTranslator.CLI.csproj" />
+  <Project Path="RB.VideoTranslator.Tests\RB.VideoTranslator.Tests.csproj" />
+</Solution>

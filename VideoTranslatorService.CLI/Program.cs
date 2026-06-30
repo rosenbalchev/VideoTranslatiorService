@@ -1,13 +1,9 @@
 using Azure.AI.OpenAI;
-using Azure.Identity;
 using System.ClientModel;
 using System.CommandLine;
-using System.CommandLine.Parsing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
-using VideoTranslatorService.BLL;
-using VideoTranslatorService.BLL.Services;
 using VideoTranslatorService.Data.Context;
 using VideoTranslatorService.Data.Repositories;
 using Azure;
