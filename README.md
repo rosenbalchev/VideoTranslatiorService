@@ -1,31 +1,128 @@
-# AI Video Translator Service
+# RB.VideoTranslator
 
-A .NET 10 CLI tool that ingests video files and runs them through a fully automated dubbing pipeline: subtitle extraction → GPT-4o-mini translation → Azure Neural TTS synthesis → Demucs voice removal → audio mix → final video mux with embedded subtitles and multiple audio tracks.
+A .NET 10 CLI tool and reusable BLL library that ingests video files and runs them through a fully automated dubbing pipeline: subtitle extraction → GPT-4o-mini translation → Azure Neural TTS synthesis → Demucs voice removal → audio mix → final video mux with embedded subtitles and multiple audio tracks.
 
 ---
 
-## Quick start
+## Setup overview
 
-See **[how-to-start.md](how-to-start.md)** for full installation instructions, Python environment setup, and Azure configuration.
+> **Do these steps in order — the install scripts read from `appsettings.json`, so configure it first.**
+
+1. [Edit `appsettings.json`](#1-configure-appssettingsjson) — set your working folder and Azure credentials
+2. [Run an install script](#2-run-the-install-script) — installs ffmpeg, Python packages, creates the venv in your working folder
+3. [Build and run](#3-build-and-run)
+
+See **[how-to-start.md](how-to-start.md)** for the full step-by-step guide including system dependencies.
 
 ---
 
 ## Architecture
 
 ```
-VideoTranslatiorService.slnx
-├── VideoTranslatorService.Data/       ← EF Core entities, DbContext, repositories
-├── VideoTranslatorService.BLL/        ← Business logic, pipeline services
-├── VideoTranslatorService.CLI/        ← Console entry-point, DI wiring, CLI options
-└── VideoTranslatorService.Tests/      ← xUnit unit tests (BLL + Data layers)
+RB.VideoTranslator.slnx
+├── RB.VideoTranslator.Data/    ← EF Core entities, DbContext, repositories
+├── RB.VideoTranslator.BLL/     ← Business logic, pipeline services, DI extension (NuGet packable)
+├── RB.VideoTranslator.CLI/     ← Console entry-point, CLI options, appsettings.json support
+└── RB.VideoTranslator.Tests/   ← xUnit unit tests (BLL + Data layers)
 ```
+
+### NuGet package
+
+`RB.VideoTranslator.BLL` is published as a NuGet package for use in other hosts (e.g. a background service or web API):
+
+```csharp
+services.AddRBVideoTranslator(configuration, o =>
+{
+    o.AzureSubscriptionKey = "...";
+    // override individual values programmatically
+});
+```
+
+Pack locally:
+```bat
+dotnet pack RB.VideoTranslator.BLL\RB.VideoTranslator.BLL.csproj --output nupkg
+```
+
+---
+
+## 1. Configure appsettings.json
+
+`appsettings.json` lives next to `RB.VideoTranslator.CLI.exe` (or inside `RB.VideoTranslator.CLI\` in source). Fill in your values **before** running the install scripts.
+
+```json
+{
+  "RBVideoTranslator": {
+    "WorkingFolderPath": "C:\\VideoTranslator",
+    "VenvPath": "",
+    "FfmpegPath": "ffmpeg",
+    "PythonPath": "python",
+    "DemucsPath": "python",
+    "AzureSubscriptionKey": "<your-key>",
+    "AzureEndpointUrl": "https://<resource>.cognitiveservices.azure.com/",
+    "AzureOpenAiEndpoint": "https://<resource>.services.ai.azure.com/",
+    "AzureOpenAiDeployment": "gpt-4o-mini",
+    "TranslationTargetLanguages": [ "Bulgarian" ],
+    "OutputFolderPath": "",
+    "UseFemaleVoice": false
+  }
+}
+```
+
+| Field | Required | Notes |
+|-------|----------|-------|
+| `WorkingFolderPath` | **yes** | Root folder; `input`, `processing`, `output` subfolders are created automatically. The CLI always runs with this as its working directory. |
+| `VenvPath` | auto | Filled in automatically by the install script (`<WorkingFolderPath>\rb.video.translator`). Leave empty before first run. |
+| `AzureSubscriptionKey` | **yes** | Azure Cognitive Services key — used for both Speech TTS and OpenAI. |
+| `AzureEndpointUrl` | **yes** | Azure Speech endpoint URL. |
+| `AzureOpenAiEndpoint` | **yes** | Azure AI Services root URL (no `/openai/v1` suffix). |
+| `TranslationTargetLanguages` | | Comma-separated languages. Voices are selected automatically. |
+| `OutputFolderPath` | | Overrides the default `<WorkingFolderPath>\output`. |
+
+All values can be overridden at run-time with CLI arguments (see [All options](#all-options)).
+
+---
+
+## 2. Run the install script
+
+From the repository root, choose the script that matches your hardware:
+
+| Script | When to use |
+|--------|-------------|
+| `scripts\install-cuda.bat` | NVIDIA GPU — installs PyTorch 2.5.1 with CUDA 12.4 (5–10× faster) |
+| `scripts\install-cpu.bat`  | No GPU — installs CPU-only PyTorch 2.5.1 |
+
+The script will:
+1. Read `WorkingFolderPath` from `appsettings.json`
+2. Create the `input`, `processing`, `output` subfolders
+3. Install ffmpeg via winget
+4. Create a Python 3.12 virtual environment at `<WorkingFolderPath>\rb.video.translator`
+5. Install PyTorch, Demucs, faster-whisper (and CUDA runtime libs if CUDA)
+6. Write `VenvPath` back into `appsettings.json` automatically
+
+After this step `appsettings.json` will have `VenvPath` filled and no further CLI flags are needed.
+
+---
+
+## 3. Build and run
+
+```bat
+dotnet build --configuration Release
+```
+
+Place video files (`.mp4`, `.mkv`, `.avi`, `.mov`, `.webm`) in `<WorkingFolderPath>\input`, then run:
+
+```bat
+RB.VideoTranslator.CLI\bin\Release\net10.0\RB.VideoTranslator.CLI.exe
+```
+
+No CLI arguments are required when `appsettings.json` is fully configured.
 
 ---
 
 ## Pipeline
 
 ```
-Input folder
+WorkingFolderPath\input
     │
     ▼
 [SeparatingMedia]       ffmpeg — extract audio WAV + produce silent MP4
@@ -36,21 +133,20 @@ Input folder
     ▼
 [RemovingVoice]         Demucs htdemucs — separate vocals from music bed → no_vocals.flac
     │
+    ▼  ┌─────────────────── repeated for each target language ───────────────────┐
+[TranslatingSrt]        GPT-4o-mini — translate SRT (50 entries/call)            │
+    │  │                                                                          │
+[SynthesisingAzureTts]  Azure Neural TTS — synthesise translated SRT → WAV       │
+                         • Per-entry synthesis, one API call per subtitle entry   │
+                         • <prosody rate> adjusts speed to fit each window        │
+                         • Absolute-timestamp leading silence keeps sync          │
+                         • Retries up to 3 times on transient SDK timeouts        │
+    │  │                                                                          │
+[MixingAudio]           ffmpeg amix — blend no_vocals + TTS WAV                  │
+    │  └───────────────────────────────────────────────────────────────────────── ┘
     ▼
-[TranslatingSrt]        GPT-4o-mini — translate SRT to target language (50 entries/call)
-    │  ↓ repeated for each target language
-[SynthesisingAzureTts]  Azure Neural TTS — synthesise translated SRT → WAV
-                         • Per-entry synthesis — one API call per subtitle entry
-                         • <prosody rate> adjusts speed to fit each subtitle window
-                         • Absolute-timestamp leading silence keeps sync across entries
-                         • Retries up to 3 times on transient SDK timeouts
-    │
-[MixingAudio]           ffmpeg amix — blend no_vocals.flac + TTS WAV → mixed WAV
-    │  ↑ end of per-language loop
-    ▼
-[AddingToVideo]         ffmpeg — mux silent MP4 + original audio + all language mixed tracks
-                         + all translated SRTs as soft subtitles
-                         Output → configurable output folder
+[AddingToVideo]         ffmpeg — mux silent MP4 + original + all language tracks
+                         + all translated SRTs as soft subtitles → OutputFolderPath
     │
     ▼
 Completed  ✓
@@ -60,7 +156,7 @@ Completed  ✓
 
 ## Services
 
-### Data layer (`VideoTranslatorService.Data`)
+### Data layer (`RB.VideoTranslator.Data`)
 
 | Type | Purpose |
 |------|---------|
@@ -69,7 +165,7 @@ Completed  ✓
 | `AppDbContext` | EF Core SQLite context |
 | `IVideoJobRepository` / `VideoJobRepository` | CRUD + resumable-job query |
 
-### BLL (`VideoTranslatorService.BLL`)
+### BLL (`RB.VideoTranslator.BLL`)
 
 | Service | Purpose |
 |---------|---------|
@@ -89,67 +185,25 @@ Completed  ✓
 
 ---
 
-## Prerequisites
+## All options
 
-| Requirement | Notes |
-|-------------|-------|
-| [.NET 10 SDK](https://dotnet.microsoft.com/download) | `net10.0` target |
-| [ffmpeg](https://ffmpeg.org/download.html) | On `PATH` or via `--ffmpeg` |
-| [Python 3.12](https://www.python.org/downloads/) | Required for faster-whisper and Demucs |
-| Azure Cognitive Services (Speech) | TTS key + endpoint |
-| Azure AI Services (OpenAI) | GPT-4o-mini deployment; uses `DefaultAzureCredential` — run `az login` first |
+Every option can come from `appsettings.json` (preferred) or be overridden on the CLI. Nothing is required on the command line when the config file is complete.
 
-### Python environment
-
-Use one of the provided scripts to create an isolated virtual environment with all dependencies:
-
-| Script | When to use |
-|--------|-------------|
-| `scripts\install-cuda.bat` | NVIDIA GPU available — installs PyTorch 2.5.1 with CUDA 12.4 (5–10× faster) |
-| `scripts\install-cpu.bat`  | No GPU — installs CPU-only PyTorch 2.5.1 |
-
-Both scripts create a `bgtts-env` folder in the current directory. Pass `--venv bgtts-env` to the CLI to use it.
-
-See [how-to-start.md](how-to-start.md) for detailed setup instructions.
-
----
-
-## Usage
-
-```bat
-VideoTranslatorService.CLI.exe ^
-  --input-folder      "C:\videos\input"               ^
-  --processing-folder "C:\videos\processing"          ^
-  --output-folder     "C:\videos\output"              ^
-  --db                "C:\videos\videotranslator.db"  ^
-  --azure-key         "<speech-subscription-key>"     ^
-  --azure-endpoint    "https://<resource>.cognitiveservices.azure.com/" ^
-  --openai-endpoint   "https://<resource>.services.ai.azure.com/"      ^
-  --venv              bgtts-env                        ^
-  --target-lang       "Bulgarian,German"
-```
-
-### All options
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--input-folder` | *(required)* | Folder scanned for new video files |
-| `--processing-folder` | *(required)* | Working folder for in-progress jobs |
-| `--output-folder` | `output` | Destination for finished dubbed videos |
-| `--db` | `videotranslator.db` | SQLite database path |
-| `--ffmpeg` | `ffmpeg` | Path to ffmpeg executable |
-| `--python` | `python` | Path to Python executable (Whisper) |
-| `--demucs` | `python` | Path to Python executable (Demucs) |
-| `--venv` | — | Virtual environment root; overrides `--python` and `--demucs` |
-| `--azure-key` | *(required)* | Azure Cognitive Services subscription key (Speech TTS) |
-| `--azure-endpoint` | *(required)* | Azure Speech endpoint URL |
-| `--openai-endpoint` | *(required)* | Azure AI Services root URL (no `/openai/v1` suffix) |
-| `--openai-deployment` | `gpt-4o-mini` | Azure OpenAI deployment name |
-| `--target-lang` | `Bulgarian` | Comma-separated target languages, e.g. `"Bulgarian,German"` |
+| CLI option | appsettings.json key | Default | Description |
+|------------|----------------------|---------|-------------|
+| `--work-folder` | `WorkingFolderPath` | *(required)* | Root folder for all pipeline data |
+| `--azure-key` | `AzureSubscriptionKey` | *(required)* | Azure Cognitive Services key |
+| `--azure-endpoint` | `AzureEndpointUrl` | *(required)* | Azure Speech endpoint URL |
+| `--openai-endpoint` | `AzureOpenAiEndpoint` | *(required)* | Azure AI Services root URL |
+| `--venv` | `VenvPath` | auto | Python venv path (auto-set by install script) |
+| `--ffmpeg` | `FfmpegPath` | `ffmpeg` | ffmpeg executable |
+| `--python` | `PythonPath` | `python` | Python executable (Whisper) |
+| `--demucs` | `DemucsPath` | `python` | Python executable (Demucs) |
+| `--openai-deployment` | `AzureOpenAiDeployment` | `gpt-4o-mini` | Azure OpenAI deployment name |
+| `--target-lang` | `TranslationTargetLanguages` | `Bulgarian` | Comma-separated target languages |
+| `--female` | `UseFemaleVoice` | `false` | Use female Azure TTS voice |
 
 > **Voices are selected automatically** per language. The mapping lives in `PipelineOrchestrator.VoiceMap` — add an entry there to support additional languages.
-
-> **Authentication for OpenAI:** `DefaultAzureCredential` is used — run `az login` before the first run, or set `AZURE_CLIENT_ID` / `AZURE_TENANT_ID` / `AZURE_CLIENT_SECRET` for a service principal.
 
 ---
 
@@ -162,8 +216,8 @@ The orchestrator tracks which pipeline state is "stable" (fully committed to the
 ## Testing
 
 ```bash
-dotnet test VideoTranslatiorService.slnx
-dotnet test VideoTranslatiorService.slnx --verbosity normal
+dotnet test RB.VideoTranslator.slnx
+dotnet test RB.VideoTranslator.slnx --verbosity normal
 ```
 
 ### Test coverage (141 tests)
@@ -174,19 +228,11 @@ dotnet test VideoTranslatiorService.slnx --verbosity normal
 | `MediaSeparatorService` | `BLL/MediaSeparatorServiceTests.cs` | Path building, ffmpeg args, state update, missing-output error |
 | `SrtExtractorService` | `BLL/SrtExtractorServiceTests.cs` | Whisper invocation, output path, state transition |
 | `SrtTranslatorService` | `BLL/SrtTranslatorServiceTests.cs` | GPT chunking (50/call), system prompt contains target language, output path, state transition |
-| `SrtToAzureTtsService` | `BLL/SrtToPiperBgServiceTests.cs` | Per-entry SSML, `<prosody rate>` logic, silence padding, WAV concatenation, retry on failure, silence fallback |
+| `SrtToAzureTtsService` | `BLL/SrtToAzureTtsServiceTests.cs` | Per-entry SSML, `<prosody rate>` logic, silence padding, WAV concatenation, retry on failure, silence fallback |
 | `VoiceRemoverService` | `BLL/VoiceRemoverServiceTests.cs` | Demucs args, output path detection, state transition |
 | `AudioMixerService` | `BLL/AudioMixerServiceTests.cs` | ffmpeg amix args, language-specific output path, state transition, missing-output error |
 | `VideoMuxerService` | `BLL/VideoMuxerServiceTests.cs` | Multi-stream ffmpeg args, apad filter, Original/language metadata, subtitle codec (MP4/MKV), output folder |
 | `VideoJobRepository` | `Data/VideoJobRepositoryTests.cs` | CRUD, state filtering, `UpdatedAt` timestamp |
-
-### Test dependencies
-
-| Package | Role |
-|---------|------|
-| xUnit | Test framework |
-| NSubstitute | Mocking (`IVideoJobRepository`, `IProcessRunner`, `IFileSystem`, `IAzureSpeechEngine`, `IAzureChatEngine`) |
-| `Microsoft.EntityFrameworkCore.InMemory` | In-memory SQLite for repository tests |
 
 ---
 
