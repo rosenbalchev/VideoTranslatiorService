@@ -507,24 +507,38 @@ public sealed class SrtToAzureTtsServiceTests
     }
 
     [Fact]
-    public void BuildSsml_OmitsProsodyTagWhenRateIsMaxAndMaxIsNatural()
+    public void BuildSsml_ClampsToMaxRateWhenTextOverflowsWindow()
     {
-        // Very long text in a short window → rate clamped to MaxRatePct (100%) →
-        // prosody tag is omitted because 100% is the voice's natural speed.
+        // Very long text in a short window → rate clamped to MaxRatePct (105%),
+        // emitted as the relative delta the SSML prosody rate expects ("+5%").
         var longText = new string('x', 500);
         var entries  = new List<SrtEntry> { new(0, 1000, longText) };
         var ssml     = SrtToAzureTtsService.BuildSsml(entries, "Voice", "en-US");
-        Assert.DoesNotContain("<prosody", ssml);
+        Assert.Contains($"<prosody rate=\"{SrtToAzureTtsService.FormatRateDelta(SrtToAzureTtsService.MaxRatePct)}\">", ssml);
     }
 
     [Fact]
-    public void BuildSsml_OmitsProsodyTagWhenRateIsNearNormal()
+    public void BuildSsml_AppliesDefaultRateWhenTextFitsNormally()
     {
-        // ~13 chars in 1000ms → estimated 1000ms → rate ≈ 100% → no prosody tag
+        // ~13 chars in 1000ms → estimated 1000ms → natural rate ≈ 100%, but
+        // DefaultRatePct (105%) always applies — the voice never drops to natural pace.
         var text    = new string('x', 13); // 13 chars / 13 c/s = 1000ms
         var entries = new List<SrtEntry> { new(0, 1000, text) };
         var ssml    = SrtToAzureTtsService.BuildSsml(entries, "Voice", "en-US");
-        Assert.DoesNotContain("<prosody", ssml);
+        Assert.Contains($"<prosody rate=\"{SrtToAzureTtsService.FormatRateDelta(SrtToAzureTtsService.DefaultRatePct)}\">", ssml);
+    }
+
+    // ── FormatRateDelta unit tests ────────────────────────────────────────────
+
+    [Theory]
+    [InlineData(105.0, "+5%")]
+    [InlineData(101.0, "+1%")]
+    [InlineData(100.0, "+0%")]
+    [InlineData(95.0,  "-5%")]
+    [InlineData(90.0,  "-10%")]
+    public void FormatRateDelta_FormatsSignedRelativeDelta(double rate, string expected)
+    {
+        Assert.Equal(expected, SrtToAzureTtsService.FormatRateDelta(rate));
     }
 
     // ── ConcatenateWav unit tests ─────────────────────────────────────────────

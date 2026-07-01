@@ -247,7 +247,7 @@ public sealed class SrtToAzureTtsService : ISrtToAzureTtsService
         var escaped = XmlEscape(text);
         var content = Math.Abs(rate - 100.0) < 1.0
             ? escaped
-            : $"<prosody rate=\"{rate:F0}%\">{escaped}</prosody>";
+            : $"<prosody rate=\"{FormatRateDelta(rate)}\">{escaped}</prosody>";
         return $"<?xml version=\"1.0\" encoding=\"UTF-8\"?>" +
                $"<speak version=\"1.0\" xmlns=\"http://www.w3.org/2001/10/synthesis\" " +
                $"xmlns:mstts=\"http://www.w3.org/2001/mstts\" xml:lang=\"{lang}\">" +
@@ -290,8 +290,8 @@ public sealed class SrtToAzureTtsService : ISrtToAzureTtsService
     // Default speaking rate applied to all normal entries — slightly slower than the
     // neural voice's natural pace to give the listener comfortable time to follow.
     // Only raised above this when text would genuinely overflow its subtitle window.
-    public const double DefaultRatePct = 100.0;
-    public const double MaxRatePct     = 100.0;
+    public const double DefaultRatePct = 105.0;
+    public const double MaxRatePct     = 105.0;
 
     internal static string BuildSsml(
         IReadOnlyList<SrtEntry> entries,
@@ -310,7 +310,7 @@ public sealed class SrtToAzureTtsService : ISrtToAzureTtsService
             var gap = Math.Max(0, entry.StartMs - curMs);
             if (gap > 0)
                 sb.Append($"<break time=\"{gap}ms\"/>");
-
+                
             var text        = XmlEscape(entry.Text);
             var availableMs = entry.EndMs - entry.StartMs;
             var rate        = SpeechRateFor(entry.Text, availableMs);
@@ -318,7 +318,7 @@ public sealed class SrtToAzureTtsService : ISrtToAzureTtsService
             if (Math.Abs(rate - 100.0) < 1.0)
                 sb.Append(text);
             else
-                sb.Append($"<prosody rate=\"{rate:F0}%\">{text}</prosody>");
+                sb.Append($"<prosody rate=\"{FormatRateDelta(rate)}\">{text}</prosody>");
 
             curMs = entry.EndMs;
         }
@@ -341,6 +341,14 @@ public sealed class SrtToAzureTtsService : ISrtToAzureTtsService
         return naturalRate > DefaultRatePct
             ? Math.Min(naturalRate, MaxRatePct)
             : DefaultRatePct;
+    }
+
+    // Formats an absolute rate (e.g. 105.0, meaning 105%) as the signed relative
+    // delta SSML expects (e.g. "+5%"), rather than an absolute percentage.
+    internal static string FormatRateDelta(double rate)
+    {
+        var delta = rate - 100.0;
+        return delta >= 0 ? $"+{delta:F0}%" : $"{delta:F0}%";
     }
 
     // ── SRT parser ────────────────────────────────────────────────────────────
