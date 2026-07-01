@@ -177,7 +177,7 @@ Set them in `appsettings.json`:
 Or override on the CLI: `--target-lang "Bulgarian,German,French"`.
 
 Supported languages and their Azure Neural voices are listed in
-`RB.VideoTranslator.BLL\Services\PipelineOrchestrator.cs` (`VoiceMap`).
+`RB.VideoTranslator.Core\Services\PipelineOrchestrator.cs` (`VoiceMap`).
 
 ---
 

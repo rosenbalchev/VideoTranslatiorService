@@ -1,6 +1,8 @@
 using Microsoft.EntityFrameworkCore;
 using RB.VideoTranslator.Data.Context;
-using RB.VideoTranslator.Data.Entities;
+using RB.VideoTranslator.Domain.Dbo;
+using RB.VideoTranslator.Domain.Enums;
+using RB.VideoTranslator.Domain.Interfaces;
 
 namespace RB.VideoTranslator.Data.Repositories;
 
