@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging;
 using RB.VideoTranslator.Domain.Dbo;
 using RB.VideoTranslator.Domain.Enums;
 using RB.VideoTranslator.Domain.Interfaces;
+using RB.VideoTranslator.Domain.Models;
 
 namespace RB.VideoTranslator.Core.Services;
 
@@ -118,9 +119,9 @@ public sealed class SrtToAzureTtsService : ISrtToAzureTtsService
     {
         _logger.LogInformation("Synthesising {Count} entries one-by-one for precise sync", entries.Count);
 
-        // Phase 1: TTS calls — collect all audio and detect the actual output format
+        // Phase 1: TTS calls — collect all results and detect the actual output format
         // from the first valid chunk so silence chunks always match.
-        var rawAudio       = new byte[entries.Count][];
+        var rawResults     = new SpeechAudioResult?[entries.Count];
         var sampleRate     = 44100;
         var channels       = 1;
         var bitsPerSample  = 16;
@@ -140,12 +141,12 @@ public sealed class SrtToAzureTtsService : ISrtToAzureTtsService
                 i + 1, entries.Count, entry.StartMs, entry.EndMs, rate);
 
             // Retry on transient Azure SDK timeouts (frame-interval watchdog fires ~3 000ms).
-            byte[]? audio = null;
+            SpeechAudioResult? result = null;
             for (int attempt = 1; attempt <= MaxTtsRetries; attempt++)
             {
                 try
                 {
-                    audio = await _engine.SpeakSsmlAsync(ssml, endpointUrl, subscriptionKey, voiceName, ct);
+                    result = await _engine.SpeakSsmlAsync(ssml, endpointUrl, subscriptionKey, voiceName, ct);
                     break;
                 }
                 catch (OperationCanceledException) { throw; }
@@ -168,13 +169,13 @@ public sealed class SrtToAzureTtsService : ISrtToAzureTtsService
                 }
             }
 
-            rawAudio[i] = audio ?? [];
+            rawResults[i] = result;
 
-            if (!formatDetected && IsValidRiffWav(rawAudio[i]))
+            if (!formatDetected && result is not null)
             {
-                sampleRate    = (int)BitConverter.ToUInt32(rawAudio[i], 24);
-                channels      = BitConverter.ToUInt16(rawAudio[i], 22);
-                bitsPerSample = BitConverter.ToUInt16(rawAudio[i], 34);
+                sampleRate     = result.SampleRate;
+                channels       = result.Channels;
+                bitsPerSample  = result.BitsPerSample;
                 formatDetected = true;
             }
         }
@@ -202,12 +203,14 @@ public sealed class SrtToAzureTtsService : ISrtToAzureTtsService
                 chunks.Add(MakeSilenceWav(leadingMs, sampleRate, targetChannels, bitsPerSample));
 
             int spokenMs;
-            var audio = rawAudio[i];
-            if (IsValidRiffWav(audio))
+            var entryResult = rawResults[i];
+            if (entryResult is not null)
             {
-                var finalAudio = targetChannels > channels ? UpmixMonoToStereo(audio) : audio;
+                var finalAudio = targetChannels > channels
+                    ? UpmixMonoToStereo(entryResult.AudioData)
+                    : entryResult.AudioData;
                 chunks.Add(finalAudio);
-                var actualMs = GetWavDurationMs(audio); // duration unchanged by upmix
+                var actualMs = entryResult.DurationMs; // duration unchanged by upmix
                 var padMs    = expectedMs - actualMs;
                 if (padMs > 50)
                 {
@@ -448,14 +451,6 @@ public sealed class SrtToAzureTtsService : ISrtToAzureTtsService
         BitConverter.GetBytes((uint)dataSize).CopyTo(wav, 40);
         // data bytes are already 0 (silence)
         return wav;
-    }
-
-    // Returns true if the byte array looks like a RIFF WAV with a findable "data" chunk.
-    private static bool IsValidRiffWav(byte[] data)
-    {
-        if (data.Length < 12) return false;
-        return data[0] == 'R' && data[1] == 'I' && data[2] == 'F' && data[3] == 'F'
-            && data[8] == 'W' && data[9] == 'A' && data[10] == 'V' && data[11] == 'E';
     }
 
     // Returns the duration of a valid WAV in milliseconds.

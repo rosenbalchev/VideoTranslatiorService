@@ -6,6 +6,7 @@ using RB.VideoTranslator.Core.Services;
 using RB.VideoTranslator.Domain.Dbo;
 using RB.VideoTranslator.Domain.Enums;
 using RB.VideoTranslator.Domain.Interfaces;
+using RB.VideoTranslator.Domain.Models;
 
 namespace RB.VideoTranslator.Tests.Core;
 
@@ -36,6 +37,14 @@ public sealed class SrtToAzureTtsServiceTests
     // Engine returns a proper minimal WAV so ConcatenateWav doesn't throw when
     // the silence chunk is prepended to it.
     private static readonly byte[] FakeEngineWav = MakeWav(4);
+
+    // Mirrors what AzureSpeechEngine would parse from FakeEngineWav's header.
+    private static readonly SpeechAudioResult FakeEngineResult = new(
+        FakeEngineWav,
+        SampleRate: 44100,
+        Channels: 1,
+        BitsPerSample: 16,
+        DurationMs: SrtToAzureTtsService.GetWavDurationMs(FakeEngineWav));
 
     // ── SRT sample ────────────────────────────────────────────────────────────
 
@@ -69,7 +78,7 @@ public sealed class SrtToAzureTtsServiceTests
         engine.SpeakSsmlAsync(
                 Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(),
                 Arg.Any<string>(), Arg.Any<CancellationToken>())
-            .Returns(Task.FromResult(FakeEngineWav));
+            .Returns(Task.FromResult(FakeEngineResult));
 
         return new SrtToAzureTtsService(
             repo, fs, engine,
@@ -127,7 +136,7 @@ public sealed class SrtToAzureTtsServiceTests
             .Returns(ci =>
             {
                 Assert.True(ssmlWritten, "SSML must be written before the engine is called");
-                return Task.FromResult(FakeEngineWav);
+                return Task.FromResult(FakeEngineResult);
             });
 
         await sut.SynthesiseAsync(MakeJob(), "key", "https://ep/");

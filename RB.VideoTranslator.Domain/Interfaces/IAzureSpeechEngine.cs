@@ -1,8 +1,10 @@
+using RB.VideoTranslator.Domain.Models;
+
 namespace RB.VideoTranslator.Domain.Interfaces;
 
 public interface IAzureSpeechEngine
 {
-    Task<byte[]> SpeakSsmlAsync(
+    Task<SpeechAudioResult> SpeakSsmlAsync(
         string ssml,
         string endpointUrl,
         string subscriptionKey,
