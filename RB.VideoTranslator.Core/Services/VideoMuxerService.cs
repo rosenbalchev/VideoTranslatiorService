@@ -44,6 +44,11 @@ public sealed class VideoMuxerService : IVideoMuxerService
 
         _fs.CreateDirectory(outputFolder);
 
+        var distinctLangResults = languageResults
+            .GroupBy(l => l.Language)
+            .Select(g => g.First())
+            .ToList();
+
         var ext           = Path.GetExtension(job.OriginalFileName).ToLowerInvariant();
         var baseName      = Path.GetFileNameWithoutExtension(job.OriginalFileName);
         var outputExt     = ext is ".mkv" ? ".mkv" : ".mp4";
@@ -54,9 +59,9 @@ public sealed class VideoMuxerService : IVideoMuxerService
 
         _logger.LogInformation(
             "Muxing {Video} + original audio + {N} language track(s) → {Out}",
-            job.SilentVideoPath, languageResults.Count, multiAudioPath);
+            job.SilentVideoPath, distinctLangResults.Count, multiAudioPath);
 
-        var args = BuildFfmpegArgs(job, languageResults, subtitleCodec, multiAudioPath);
+        var args = BuildFfmpegArgs(job, distinctLangResults, subtitleCodec, multiAudioPath);
 
         _logger.LogInformation("ffmpeg args: {Args}", args);
         await _runner.RunAsync(ffmpegPath, args, ct);
@@ -71,7 +76,7 @@ public sealed class VideoMuxerService : IVideoMuxerService
         _logger.LogInformation("Multi-audio video written to {Path}", multiAudioPath);
 
         // ── Per-language individual videos ───────────────────────────────────
-        foreach (var lr in languageResults)
+        foreach (var lr in distinctLangResults)
         {
             ct.ThrowIfCancellationRequested();
 

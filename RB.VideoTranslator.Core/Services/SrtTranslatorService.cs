@@ -26,9 +26,9 @@ public sealed class SrtTranslatorService : ISrtTranslatorService
         IAzureChatEngine chat,
         ILogger<SrtTranslatorService> logger)
     {
-        _repo   = repo;
-        _fs     = fs;
-        _chat   = chat;
+        _repo = repo;
+        _fs = fs;
+        _chat = chat;
         _logger = logger;
     }
 
@@ -62,7 +62,7 @@ public sealed class SrtTranslatorService : ISrtTranslatorService
             ct.ThrowIfCancellationRequested();
 
             var chunkCount = Math.Min(ChunkSize, blocks.Count - i);
-            var lines      = new string[chunkCount];
+            var lines = new string[chunkCount];
             for (int j = 0; j < chunkCount; j++)
                 lines[j] = $"[{i + j + 1}] {blocks[i + j].Text}";
 
@@ -92,7 +92,7 @@ public sealed class SrtTranslatorService : ISrtTranslatorService
             sb.AppendLine();
         }
 
-        var baseName   = Path.GetFileNameWithoutExtension(job.OriginalFileName);
+        var baseName = Path.GetFileNameWithoutExtension(job.OriginalFileName);
         var outputPath = Path.Combine(
             job.ProcessingFolderPath,
             $"{baseName}_translated_{targetLanguage}.srt");
@@ -100,7 +100,7 @@ public sealed class SrtTranslatorService : ISrtTranslatorService
         await _fs.WriteAllTextAsync(outputPath, sb.ToString(), ct);
 
         job.TranslatedSrtFilePath = outputPath;
-        job.State                 = JobState.SrtTranslated;
+        job.State = JobState.SrtTranslated;
         await _repo.UpdateAsync(job, ct);
 
         _logger.LogInformation("Translated SRT written to {Path}", outputPath);
@@ -111,7 +111,7 @@ public sealed class SrtTranslatorService : ISrtTranslatorService
     // entries into a single string — the TTS step expects one text string per entry.
     internal static List<SrtBlock> ParseBlocks(string content)
     {
-        var blocks    = new List<SrtBlock>();
+        var blocks = new List<SrtBlock>();
         var rawBlocks = content
             .Replace("\r\n", "\n")
             .Split(["\n\n"], StringSplitOptions.RemoveEmptyEntries);

@@ -290,8 +290,8 @@ public sealed class SrtToAzureTtsService : ISrtToAzureTtsService
     // Default speaking rate applied to all normal entries — slightly slower than the
     // neural voice's natural pace to give the listener comfortable time to follow.
     // Only raised above this when text would genuinely overflow its subtitle window.
-    public const double DefaultRatePct = 105.0;
-    public const double MaxRatePct     = 105.0;
+    public const double DefaultRatePct = 130.0;
+    public const double MaxRatePct     = 130.0;
 
     internal static string BuildSsml(
         IReadOnlyList<SrtEntry> entries,
