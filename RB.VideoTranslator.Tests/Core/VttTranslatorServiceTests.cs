@@ -394,4 +394,123 @@ public sealed class VttTranslatorServiceTests
         Assert.Contains("Speaker1|Female|00:00:01|00:00:03|210Hz", capturedOutput);
         Assert.Contains("Speaker2|Male|00:00:05|00:00:07|110Hz", capturedOutput);
     }
+
+    // ── Per-cue speaker NOTE preservation ──────────────────────────────────────
+
+    private const string SampleVttWithPerCueNotes = """
+        WEBVTT
+
+        NOTE Speaker1 (estimated: female)
+
+        1
+        00:00:01.000 --> 00:00:03.000
+        Hello world
+
+        NOTE Speaker2 (estimated: male)
+
+        2
+        00:00:05.000 --> 00:00:07.000
+        Goodbye world
+        """;
+
+    [Fact]
+    public void ParseBlocks_AttachesPerCueNoteLineToFollowingCue()
+    {
+        var blocks = VttTranslatorService.ParseBlocks(SampleVttWithPerCueNotes);
+
+        Assert.Equal(2, blocks.Count);
+        Assert.Equal("NOTE Speaker1 (estimated: female)", blocks[0].NoteLine);
+        Assert.Equal("NOTE Speaker2 (estimated: male)", blocks[1].NoteLine);
+    }
+
+    [Fact]
+    public void ParseBlocks_NoteLineIsNullWhenNoPrecedingNote()
+    {
+        var blocks = VttTranslatorService.ParseBlocks(SampleVtt);
+        Assert.All(blocks, b => Assert.Null(b.NoteLine));
+    }
+
+    [Fact]
+    public void ParseBlocks_DoesNotAttachTheLeadingMultiLineSummaryAsAPerCueNote()
+    {
+        const string vtt = """
+            WEBVTT
+
+            NOTE
+            The conversation contains 1 speaker.
+            Speaker1|Female|00:00:01|00:00:03|210Hz
+
+            1
+            00:00:01.000 --> 00:00:03.000
+            Hello world
+            """;
+
+        var blocks = VttTranslatorService.ParseBlocks(vtt);
+
+        Assert.Single(blocks);
+        Assert.Null(blocks[0].NoteLine);
+    }
+
+    [Fact]
+    public async Task TranslateAsync_PreservesPerCueNoteLinesInOutput()
+    {
+        _fs.ReadAllTextAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(SampleVttWithPerCueNotes));
+
+        string? capturedUser = null;
+        _chat.CompleteChatAsync(
+                Arg.Any<string>(),
+                Arg.Do<string>(u => capturedUser = u),
+                Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(TranslatedResponse));
+
+        string? capturedOutput = null;
+        _fs.WriteAllTextAsync(
+                Arg.Any<string>(),
+                Arg.Do<string>(s => capturedOutput = s),
+                Arg.Any<CancellationToken>())
+            .Returns(Task.CompletedTask);
+
+        await _sut.TranslateAsync(MakeJob(), "Bulgarian");
+
+        // Never sent to GPT.
+        Assert.NotNull(capturedUser);
+        Assert.DoesNotContain("NOTE", capturedUser);
+
+        // Preserved verbatim in the output, paired with the correct (translated) cue.
+        Assert.NotNull(capturedOutput);
+        var speaker1Idx = capturedOutput.IndexOf("NOTE Speaker1 (estimated: female)", StringComparison.Ordinal);
+        var speaker2Idx = capturedOutput.IndexOf("NOTE Speaker2 (estimated: male)", StringComparison.Ordinal);
+        var helloIdx     = capturedOutput.IndexOf("Здравей свят", StringComparison.Ordinal);
+        var goodbyeIdx   = capturedOutput.IndexOf("Довиждане свят", StringComparison.Ordinal);
+
+        Assert.True(speaker1Idx >= 0 && speaker1Idx < helloIdx, "Speaker1's note must precede its translated cue");
+        Assert.True(speaker2Idx >= 0 && speaker2Idx < goodbyeIdx, "Speaker2's note must precede its translated cue");
+    }
+
+    [Fact]
+    public async Task TranslateAsync_PreservesPerCueNoteLinesEvenWhenGptResponseIsUnparseable()
+    {
+        // Confirms NoteLine attachment depends only on block structure, not on whether
+        // GPT's translation for that block parsed successfully (fallback-to-source-text path).
+        _fs.ReadAllTextAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(SampleVttWithPerCueNotes));
+        _chat.CompleteChatAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult("some garbage with no markers"));
+
+        string? capturedOutput = null;
+        _fs.WriteAllTextAsync(
+                Arg.Any<string>(),
+                Arg.Do<string>(s => capturedOutput = s),
+                Arg.Any<CancellationToken>())
+            .Returns(Task.CompletedTask);
+
+        await _sut.TranslateAsync(MakeJob(), "Bulgarian");
+
+        Assert.NotNull(capturedOutput);
+        Assert.Contains("NOTE Speaker1 (estimated: female)", capturedOutput);
+        Assert.Contains("NOTE Speaker2 (estimated: male)", capturedOutput);
+        Assert.Contains("Hello world", capturedOutput);   // fell back to source text
+        Assert.Contains("Goodbye world", capturedOutput);
+    }
 }

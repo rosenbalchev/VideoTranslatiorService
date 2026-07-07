@@ -43,7 +43,8 @@ public sealed class VttTranslatorService : IVttTranslatorService
         // never send it to GPT, but keep it verbatim in the translated output.
         var leadingNote = ExtractLeadingNote(content);
 
-        // Parse into structured blocks so timestamps are never sent to the model.
+        // Parse into structured blocks so timestamps (and per-cue speaker NOTE lines) are
+        // never sent to the model.
         var blocks = ParseBlocks(content);
 
         _logger.LogInformation(
@@ -97,6 +98,11 @@ public sealed class VttTranslatorService : IVttTranslatorService
         }
         for (int i = 0; i < blocks.Count; i++)
         {
+            if (blocks[i].NoteLine is not null)
+            {
+                sb.AppendLine(blocks[i].NoteLine);
+                sb.AppendLine();
+            }
             sb.AppendLine((i + 1).ToString());
             sb.AppendLine(blocks[i].TimestampLine);
             sb.AppendLine(translatedTexts[i] ?? blocks[i].Text); // fall back to source text if unparseable
@@ -136,7 +142,8 @@ public sealed class VttTranslatorService : IVttTranslatorService
             : null;
     }
 
-    // Parses raw VTT content into structured blocks preserving the original timestamp line.
+    // Parses raw VTT content into structured blocks preserving the original timestamp line
+    // and, if one immediately precedes the cue, its per-cue speaker NOTE line verbatim.
     // Strips inline markup from text (same as VttToAzureTtsService) and joins multi-line
     // entries into a single string — the TTS step expects one text string per entry.
     // The leading "WEBVTT" header naturally falls out: it splits into its own single-line
@@ -148,28 +155,45 @@ public sealed class VttTranslatorService : IVttTranslatorService
             .Replace("\r\n", "\n")
             .Split(["\n\n"], StringSplitOptions.RemoveEmptyEntries);
 
+        // Must run BEFORE the `lines.Length < 2` guard below — a per-cue NOTE block is a
+        // single physical line, so it would otherwise be silently dropped by that guard
+        // before ever reaching the NOTE check (mirrors SpeakerSampleExtractorService.
+        // ParseCuesBySpeaker, which gets this ordering right).
+        string? pendingNote = null;
         foreach (var raw in rawBlocks)
         {
+            var trimmed = raw.Trim();
+
+            if (trimmed.StartsWith("NOTE", StringComparison.Ordinal))
+            {
+                // Only a single-line note (e.g. "NOTE Speaker1 (estimated: female)") is a
+                // per-cue speaker label; the multi-line summary header is handled
+                // separately by ExtractLeadingNote and must not be treated as one.
+                pendingNote = trimmed.Contains('\n') ? null : trimmed;
+                continue;
+            }
+
             var lines = raw.Split('\n', StringSplitOptions.TrimEntries);
-            if (lines.Length < 2) continue;
+            if (lines.Length < 2) { pendingNote = null; continue; }
 
             var tsIdx = Array.FindIndex(lines, l => l.Contains("-->"));
-            if (tsIdx < 0) continue;
+            if (tsIdx < 0) { pendingNote = null; continue; }
 
             var textLines = lines
                 .Skip(tsIdx + 1)
                 .Where(l => !string.IsNullOrWhiteSpace(l))
                 .ToArray();
-            if (textLines.Length == 0) continue;
+            if (textLines.Length == 0) { pendingNote = null; continue; }
 
             var text = MarkupRx.Replace(string.Join(" ", textLines), "").Trim();
-            if (string.IsNullOrEmpty(text)) continue;
+            if (string.IsNullOrEmpty(text)) { pendingNote = null; continue; }
 
-            blocks.Add(new VttBlock(lines[tsIdx], text));
+            blocks.Add(new VttBlock(lines[tsIdx], text, pendingNote));
+            pendingNote = null; // each label note pairs with exactly one following cue
         }
 
         return blocks;
     }
 
-    internal readonly record struct VttBlock(string TimestampLine, string Text);
+    internal readonly record struct VttBlock(string TimestampLine, string Text, string? NoteLine = null);
 }
