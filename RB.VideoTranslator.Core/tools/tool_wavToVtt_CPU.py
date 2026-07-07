@@ -1,13 +1,7 @@
 #!/usr/bin/env python3
 
-# Required installation for NVIDIA GPU:
+# Required installation:
 # pip install faster-whisper
-# pip install nvidia-cublas-cu12 nvidia-cudnn-cu12
-#
-# Also required:
-# - NVIDIA GPU
-# - NVIDIA driver
-# - CUDA/cuDNN compatible with faster-whisper/CTranslate2
 
 import argparse
 from pathlib import Path
@@ -21,10 +15,10 @@ def format_time(seconds: float) -> str:
     minutes, seconds = divmod(seconds, 60)
     hours, minutes = divmod(minutes, 60)
 
-    return f"{hours:02}:{minutes:02}:{seconds:02},{milliseconds:03}"
+    return f"{hours:02}:{minutes:02}:{seconds:02}.{milliseconds:03}"
 
 
-def transcribe_to_srt(input_path: str, output_path: str):
+def transcribe_to_vtt(input_path: str, output_path: str):
     input_file = Path(input_path)
     output_file = Path(output_path)
 
@@ -34,9 +28,9 @@ def transcribe_to_srt(input_path: str, output_path: str):
     output_file.parent.mkdir(parents=True, exist_ok=True)
 
     model = WhisperModel(
-        "medium",
-        device="cuda",
-        compute_type="float16"
+        "small",
+        device="cpu",
+        compute_type="int8"
     )
 
     segments, info = model.transcribe(
@@ -45,6 +39,7 @@ def transcribe_to_srt(input_path: str, output_path: str):
     )
 
     with output_file.open("w", encoding="utf-8") as f:
+        f.write("WEBVTT\n\n")
         for index, segment in enumerate(segments, start=1):
             start = format_time(segment.start)
             end = format_time(segment.end)
@@ -54,12 +49,12 @@ def transcribe_to_srt(input_path: str, output_path: str):
             f.write(f"{start} --> {end}\n")
             f.write(f"{text}\n\n")
 
-    print(f"Created SRT: {output_file}")
+    print(f"Created VTT: {output_file}")
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Convert a WAV audio file to an SRT subtitle file using local Whisper on GPU."
+        description="Convert a WAV audio file to a VTT subtitle file using a local Whisper model."
     )
 
     parser.add_argument(
@@ -69,12 +64,12 @@ def main():
 
     parser.add_argument(
         "outputpath",
-        help="Path to the output SRT file"
+        help="Path to the output VTT file"
     )
 
     args = parser.parse_args()
 
-    transcribe_to_srt(args.inputpath, args.outputpath)
+    transcribe_to_vtt(args.inputpath, args.outputpath)
 
 
 if __name__ == "__main__":

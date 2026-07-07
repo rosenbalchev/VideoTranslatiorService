@@ -14,8 +14,8 @@ public class VideoJob
     public string? ExtractedAudioPath { get; set; }
     public string? SilentVideoPath { get; set; }
 
-    // Step 2 — SRT subtitle extraction
-    public string? SrtFilePath { get; set; }
+    // Step 2 — VTT subtitle extraction
+    public string? VttFilePath { get; set; }
 
     // Step 3 — Azure TTS synthesis
     public string? AzureTtsAudioPath { get; set; }
@@ -23,8 +23,8 @@ public class VideoJob
     // Step 4 — voice removal
     public string? VoiceRemovedAudioPath { get; set; }
 
-    // Step 4 — SRT translation
-    public string? TranslatedSrtFilePath { get; set; }
+    // Step 4 — VTT translation
+    public string? TranslatedVttFilePath { get; set; }
 
     // Step 5 — voice synthesis
     public string? SynthesisedVoicePath { get; set; }

@@ -32,14 +32,14 @@ public sealed class AudioMixerServiceTests
     private static VideoJob MakeJob(
         string? voiceRemovedPath  = "/proc/no_vocals.flac",
         string? ttsPath           = "/proc/video_azure_tts.wav",
-        string? translatedSrtPath = "/proc/video_translated_Bulgarian.srt") => new()
+        string? translatedVttPath = "/proc/video_translated_Bulgarian.vtt") => new()
     {
         OriginalFileName      = "video.mp4",
         InputFilePath         = "/input/video.mp4",
         ProcessingFolderPath  = "/proc",
         VoiceRemovedAudioPath = voiceRemovedPath,
         AzureTtsAudioPath     = ttsPath,
-        TranslatedSrtFilePath = translatedSrtPath,
+        TranslatedVttFilePath = translatedVttPath,
     };
 
     // ── Guard checks ─────────────────────────────────────────────────────────

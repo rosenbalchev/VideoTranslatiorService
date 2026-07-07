@@ -9,24 +9,24 @@ using RB.VideoTranslator.Domain.Interfaces;
 
 namespace RB.VideoTranslator.Tests.Core;
 
-public sealed class SrtExtractorServiceTests
+public sealed class VttExtractorServiceTests
 {
     private readonly IVideoJobRepository _repo;
     private readonly IProcessRunner _processRunner;
     private readonly IFileSystem _fs;
-    private readonly SrtExtractorService _sut;
+    private readonly VttExtractorService _sut;
 
-    public SrtExtractorServiceTests()
+    public VttExtractorServiceTests()
     {
         _repo = Substitute.For<IVideoJobRepository>();
         _processRunner = Substitute.For<IProcessRunner>();
         _fs = Substitute.For<IFileSystem>();
         _fs.FileExists(Arg.Any<string>()).Returns(true);
-        _sut = new SrtExtractorService(
+        _sut = new VttExtractorService(
             _repo,
             _processRunner,
             _fs,
-            NullLogger<SrtExtractorService>.Instance);
+            NullLogger<VttExtractorService>.Instance);
     }
 
     private static VideoJob MakeJob(string? extractedAudioPath = "/proc/video_audio.wav") => new()
@@ -52,24 +52,24 @@ public sealed class SrtExtractorServiceTests
     }
 
     [Fact]
-    public async Task ExtractAsync_SetsSrtFilePath()
+    public async Task ExtractAsync_SetsVttFilePath()
     {
         var job = MakeJob();
 
         await _sut.ExtractAsync(job);
 
-        Assert.Equal(Path.Combine("/proc", "video.srt"), job.SrtFilePath);
+        Assert.Equal(Path.Combine("/proc", "video.vtt"), job.VttFilePath);
     }
 
     [Fact]
-    public async Task ExtractAsync_TransitionsStateToSrtExtracted()
+    public async Task ExtractAsync_TransitionsStateToVttExtracted()
     {
         var job = MakeJob();
 
         await _sut.ExtractAsync(job);
 
         await _repo.Received(1).UpdateAsync(
-            Arg.Is<VideoJob>(j => j.State == JobState.SrtExtracted),
+            Arg.Is<VideoJob>(j => j.State == JobState.VttExtracted),
             Arg.Any<CancellationToken>());
     }
 
@@ -83,7 +83,7 @@ public sealed class SrtExtractorServiceTests
     }
 
     [Fact]
-    public async Task ExtractAsync_ThrowsWhenSrtOutputFileMissing()
+    public async Task ExtractAsync_ThrowsWhenVttOutputFileMissing()
     {
         _fs.FileExists(Arg.Any<string>()).Returns(false);
 
@@ -92,7 +92,7 @@ public sealed class SrtExtractorServiceTests
     }
 
     [Fact]
-    public async Task ExtractAsync_DoesNotUpdateDbWhenSrtOutputFileMissing()
+    public async Task ExtractAsync_DoesNotUpdateDbWhenVttOutputFileMissing()
     {
         _fs.FileExists(Arg.Any<string>()).Returns(false);
 

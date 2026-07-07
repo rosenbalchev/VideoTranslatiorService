@@ -39,15 +39,15 @@ public sealed class VideoMuxerService : IVideoMuxerService
             throw new InvalidOperationException($"Job {job.Id} has no ExtractedAudioPath set.");
         if (languageResults.Count == 0)
             throw new InvalidOperationException($"Job {job.Id} has no language results to mux.");
-        if (string.IsNullOrEmpty(job.SrtFilePath))
-            throw new InvalidOperationException($"Job {job.Id} has no SrtFilePath set.");
+        if (string.IsNullOrEmpty(job.VttFilePath))
+            throw new InvalidOperationException($"Job {job.Id} has no VttFilePath set.");
 
         _fs.CreateDirectory(outputFolder);
 
         var ext           = Path.GetExtension(job.OriginalFileName).ToLowerInvariant();
         var baseName      = Path.GetFileNameWithoutExtension(job.OriginalFileName);
         var outputExt     = ext is ".mkv" ? ".mkv" : ".mp4";
-        var subtitleCodec = ext is ".mkv" ? "srt" : "mov_text";
+        var subtitleCodec = ext is ".mkv" ? "webvtt" : "mov_text";
 
         // ── Multi-audio master (all languages + original) ────────────────────
         var multiAudioPath = Path.Combine(outputFolder, $"{baseName}_multiAudio{outputExt}");
@@ -105,11 +105,11 @@ public sealed class VideoMuxerService : IVideoMuxerService
         // [2..N+1] per-language mixed audio
         foreach (var lr in languageResults)
             sb.Append($"-i \"{lr.MixedAudioPath}\" ");
-        // [N+2] original-language SRT (timing-matched to the original video)
-        sb.Append($"-i \"{job.SrtFilePath}\" ");
-        // [N+3..2N+2] per-language translated SRTs (timing adjusted to match TTS audio)
+        // [N+2] original-language VTT (timing-matched to the original video)
+        sb.Append($"-i \"{job.VttFilePath}\" ");
+        // [N+3..2N+2] per-language translated VTTs (timing adjusted to match TTS audio)
         foreach (var lr in languageResults)
-            sb.Append($"-i \"{lr.TranslatedSrtFilePath}\" ");
+            sb.Append($"-i \"{lr.TranslatedVttFilePath}\" ");
 
         // ── filter_complex: apad on every audio stream ───────────────────────
         // apad pads with silence; -shortest stops at video EOF.
@@ -121,10 +121,10 @@ public sealed class VideoMuxerService : IVideoMuxerService
         sb.Append("-map 0:v:0 ");
         for (int i = 0; i < audioCount; i++)
             sb.Append($"-map [a{i}] ");
-        var srtBase = 1 + audioCount; // first SRT input index (= original SRT)
-        sb.Append($"-map {srtBase}:s:0 ");          // original-language SRT
+        var vttBase = 1 + audioCount; // first VTT input index (= original VTT)
+        sb.Append($"-map {vttBase}:s:0 ");          // original-language VTT
         for (int i = 0; i < languageResults.Count; i++)
-            sb.Append($"-map {srtBase + 1 + i}:s:0 "); // translated SRTs
+            sb.Append($"-map {vttBase + 1 + i}:s:0 "); // translated VTTs
 
         // ── Codecs ───────────────────────────────────────────────────────────
         sb.Append($"-c:v copy -c:a aac -b:a 192k -c:s {subtitleCodec} ");
@@ -153,12 +153,12 @@ public sealed class VideoMuxerService : IVideoMuxerService
     {
         var sb = new StringBuilder();
 
-        // Inputs: [0] silent video  [1] dubbed audio  [2] original SRT  [3..N+2] all translated SRTs
+        // Inputs: [0] silent video  [1] dubbed audio  [2] original VTT  [3..N+2] all translated VTTs
         sb.Append($"-y -i \"{job.SilentVideoPath}\" ");
         sb.Append($"-i \"{lr.MixedAudioPath}\" ");
-        sb.Append($"-i \"{job.SrtFilePath}\" ");
+        sb.Append($"-i \"{job.VttFilePath}\" ");
         foreach (var lang in allLanguages)
-            sb.Append($"-i \"{lang.TranslatedSrtFilePath}\" ");
+            sb.Append($"-i \"{lang.TranslatedVttFilePath}\" ");
 
         sb.Append("-filter_complex \"[1:a]apad[a0]\" ");
 

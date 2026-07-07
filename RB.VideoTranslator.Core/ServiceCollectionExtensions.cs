@@ -40,9 +40,9 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IProcessRunner, DefaultProcessRunner>();
         services.AddScoped<IFileSystem, PhysicalFileSystem>();
         services.AddScoped<IMediaSeparatorService, MediaSeparatorService>();
-        services.AddScoped<ISrtExtractorService, SrtExtractorService>();
-        services.AddScoped<ISrtTranslatorService, SrtTranslatorService>();
-        services.AddScoped<ISrtToAzureTtsService, SrtToAzureTtsService>();
+        services.AddScoped<IVttExtractorService, VttExtractorService>();
+        services.AddScoped<IVttTranslatorService, VttTranslatorService>();
+        services.AddScoped<IVttToAzureTtsService, VttToAzureTtsService>();
         services.AddScoped<IVoiceRemoverService, VoiceRemoverService>();
         services.AddScoped<IAudioMixerService, AudioMixerService>();
         services.AddScoped<IVideoMuxerService, VideoMuxerService>();

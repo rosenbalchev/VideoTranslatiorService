@@ -15,10 +15,10 @@ public sealed class PipelineOrchestrator : IPipelineOrchestrator
     private readonly IJobService _jobService;
     private readonly IVideoJobRepository _repo;
     private readonly IMediaSeparatorService _mediaSeparator;
-    private readonly ISrtExtractorService _srtExtractor;
+    private readonly IVttExtractorService _vttExtractor;
     private readonly IVoiceRemoverService _voiceRemover;
-    private readonly ISrtTranslatorService _srtTranslator;
-    private readonly ISrtToAzureTtsService _azureTts;
+    private readonly IVttTranslatorService _vttTranslator;
+    private readonly IVttToAzureTtsService _azureTts;
     private readonly IAudioMixerService _audioMixer;
     private readonly IVideoMuxerService _videoMuxer;
     private readonly IOptions<PipelineOptions> _options;
@@ -28,10 +28,10 @@ public sealed class PipelineOrchestrator : IPipelineOrchestrator
         IJobService jobService,
         IVideoJobRepository repo,
         IMediaSeparatorService mediaSeparator,
-        ISrtExtractorService srtExtractor,
+        IVttExtractorService vttExtractor,
         IVoiceRemoverService voiceRemover,
-        ISrtTranslatorService srtTranslator,
-        ISrtToAzureTtsService azureTts,
+        IVttTranslatorService vttTranslator,
+        IVttToAzureTtsService azureTts,
         IAudioMixerService audioMixer,
         IVideoMuxerService videoMuxer,
         IOptions<PipelineOptions> options,
@@ -40,9 +40,9 @@ public sealed class PipelineOrchestrator : IPipelineOrchestrator
         _jobService     = jobService;
         _repo           = repo;
         _mediaSeparator = mediaSeparator;
-        _srtExtractor   = srtExtractor;
+        _vttExtractor   = vttExtractor;
         _voiceRemover   = voiceRemover;
-        _srtTranslator  = srtTranslator;
+        _vttTranslator  = vttTranslator;
         _azureTts       = azureTts;
         _audioMixer     = audioMixer;
         _videoMuxer     = videoMuxer;
@@ -88,16 +88,16 @@ public sealed class PipelineOrchestrator : IPipelineOrchestrator
         state is JobState.AddedToOriginalVideo or JobState.Completed or JobState.Failed;
 
     // Maps each in-progress state back to the stable state that precedes it.
-    // States inside the multi-language loop (TranslatingSrt..MixingAudio) all reset to
+    // States inside the multi-language loop (TranslatingVtt..MixingAudio) all reset to
     // VoiceRemoved so the entire language loop is retried cleanly.
     private static readonly Dictionary<JobState, JobState> StablePredecessor = new()
     {
         [JobState.SeparatingMedia]      = JobState.Queued,
-        [JobState.ExtractingSrt]        = JobState.AudioExtracted,
-        [JobState.RemovingVoice]        = JobState.SrtExtracted,
+        [JobState.ExtractingVtt]        = JobState.AudioExtracted,
+        [JobState.RemovingVoice]        = JobState.VttExtracted,
         // Multi-language loop — any crash inside resets to VoiceRemoved
-        [JobState.TranslatingSrt]       = JobState.VoiceRemoved,
-        [JobState.SrtTranslated]        = JobState.VoiceRemoved,
+        [JobState.TranslatingVtt]       = JobState.VoiceRemoved,
+        [JobState.VttTranslated]        = JobState.VoiceRemoved,
         [JobState.SynthesisingAzureTts] = JobState.VoiceRemoved,
         [JobState.AzureTtsSynthesised]  = JobState.VoiceRemoved,
         [JobState.MixingAudio]          = JobState.VoiceRemoved,
@@ -174,12 +174,12 @@ public sealed class PipelineOrchestrator : IPipelineOrchestrator
                 break;
 
             case JobState.AudioExtracted:
-                await _jobService.TransitionStateAsync(job.Id, JobState.ExtractingSrt, ct: ct);
+                await _jobService.TransitionStateAsync(job.Id, JobState.ExtractingVtt, ct: ct);
                 var extracting = (await _jobService.GetJobAsync(job.Id, ct))!;
-                await _srtExtractor.ExtractAsync(extracting, options.PythonPath, ct);
+                await _vttExtractor.ExtractAsync(extracting, options.PythonPath, ct);
                 break;
 
-            case JobState.SrtExtracted:
+            case JobState.VttExtracted:
                 // Voice removal runs here — it only needs the extracted audio and
                 // is independent of subtitles, so it runs once before any language work.
                 await _jobService.TransitionStateAsync(job.Id, JobState.RemovingVoice, ct: ct);
@@ -189,7 +189,7 @@ public sealed class PipelineOrchestrator : IPipelineOrchestrator
 
             case JobState.VoiceRemoved:
                 // Mark start of the multi-language loop.
-                await _jobService.TransitionStateAsync(job.Id, JobState.TranslatingSrt, ct: ct);
+                await _jobService.TransitionStateAsync(job.Id, JobState.TranslatingVtt, ct: ct);
                 var working = (await _jobService.GetJobAsync(job.Id, ct))!;
 
                 // Resume from any previously completed languages so that stopping and
@@ -218,8 +218,8 @@ public sealed class PipelineOrchestrator : IPipelineOrchestrator
 
                     _logger.LogInformation("Processing language: {Language} (voice: {Voice})", lang, voiceName);
 
-                    await _srtTranslator.TranslateAsync(working, lang, ct);
-                    var translatedPath = working.TranslatedSrtFilePath!;
+                    await _vttTranslator.TranslateAsync(working, lang, ct);
+                    var translatedPath = working.TranslatedVttFilePath!;
 
                     await _azureTts.SynthesiseAsync(
                         working,
@@ -234,9 +234,9 @@ public sealed class PipelineOrchestrator : IPipelineOrchestrator
                     results.Add(new LanguageResult(lang, working.MixedAudioPath!, translatedPath));
 
                     // Persist progress after every language. AudioMixerService already wrote
-                    // MixedNoVoiceWithSyntheticVoice; override state back to TranslatingSrt
+                    // MixedNoVoiceWithSyntheticVoice; override state back to TranslatingVtt
                     // until the final language is done so crash recovery (StablePredecessor
-                    // TranslatingSrt → VoiceRemoved) restores the job correctly and the loop
+                    // TranslatingVtt → VoiceRemoved) restores the job correctly and the loop
                     // skips already-completed languages on the next run.
                     var allDone = options.TranslationTargetLanguages
                         .All(l => results.Any(r => string.Equals(r.Language, l, StringComparison.OrdinalIgnoreCase)));
@@ -244,7 +244,7 @@ public sealed class PipelineOrchestrator : IPipelineOrchestrator
                     working.LanguageResultsJson = JsonSerializer.Serialize(results);
                     working.State               = allDone
                         ? JobState.MixedNoVoiceWithSyntheticVoice
-                        : JobState.TranslatingSrt;
+                        : JobState.TranslatingVtt;
                     await _repo.UpdateAsync(working, ct);
                 }
                 break;

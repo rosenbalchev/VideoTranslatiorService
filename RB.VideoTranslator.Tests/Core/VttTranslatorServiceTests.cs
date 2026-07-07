@@ -8,15 +8,17 @@ using RB.VideoTranslator.Domain.Interfaces;
 
 namespace RB.VideoTranslator.Tests.Core;
 
-public sealed class SrtTranslatorServiceTests
+public sealed class VttTranslatorServiceTests
 {
-    private const string SampleSrt = """
+    private const string SampleVtt = """
+        WEBVTT
+
         1
-        00:00:01,000 --> 00:00:03,000
+        00:00:01.000 --> 00:00:03.000
         Hello world
 
         2
-        00:00:05,000 --> 00:00:07,000
+        00:00:05.000 --> 00:00:07.000
         Goodbye world
         """;
 
@@ -26,43 +28,43 @@ public sealed class SrtTranslatorServiceTests
     private readonly IVideoJobRepository _repo;
     private readonly IFileSystem _fs;
     private readonly IAzureChatEngine _chat;
-    private readonly SrtTranslatorService _sut;
+    private readonly VttTranslatorService _sut;
 
-    public SrtTranslatorServiceTests()
+    public VttTranslatorServiceTests()
     {
         _repo = Substitute.For<IVideoJobRepository>();
         _fs   = Substitute.For<IFileSystem>();
         _chat = Substitute.For<IAzureChatEngine>();
 
         _fs.ReadAllTextAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
-            .Returns(Task.FromResult(SampleSrt));
+            .Returns(Task.FromResult(SampleVtt));
         _chat.CompleteChatAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
             .Returns(Task.FromResult(TranslatedResponse));
 
-        _sut = new SrtTranslatorService(
+        _sut = new VttTranslatorService(
             _repo, _fs, _chat,
-            NullLogger<SrtTranslatorService>.Instance);
+            NullLogger<VttTranslatorService>.Instance);
     }
 
-    private static VideoJob MakeJob(string? srtFilePath = "/proc/video.srt") => new()
+    private static VideoJob MakeJob(string? vttFilePath = "/proc/video.vtt") => new()
     {
         OriginalFileName     = "video.mp4",
         InputFilePath        = "/input/video.mp4",
         ProcessingFolderPath = "/proc",
-        SrtFilePath          = srtFilePath
+        VttFilePath          = vttFilePath
     };
 
     // ── Guard checks ─────────────────────────────────────────────────────────
 
     [Fact]
-    public async Task TranslateAsync_ThrowsWhenSrtFilePathIsNull()
+    public async Task TranslateAsync_ThrowsWhenVttFilePathIsNull()
     {
         await Assert.ThrowsAsync<InvalidOperationException>(
             () => _sut.TranslateAsync(MakeJob(null), "Bulgarian"));
     }
 
     [Fact]
-    public async Task TranslateAsync_ThrowsWhenSrtFilePathIsEmpty()
+    public async Task TranslateAsync_ThrowsWhenVttFilePathIsEmpty()
     {
         await Assert.ThrowsAsync<InvalidOperationException>(
             () => _sut.TranslateAsync(MakeJob(""), "Bulgarian"));
@@ -114,11 +116,11 @@ public sealed class SrtTranslatorServiceTests
     public async Task TranslateAsync_ChunksLargeFiles()
     {
         // 120 blocks → 3 chat calls (50 + 50 + 20)
-        var bigSrt = string.Join("\n\n", Enumerable.Range(1, 120).Select(i =>
-            $"{i}\n00:00:{i:D2},000 --> 00:00:{i:D2},500\nLine {i}"));
+        var bigVtt = "WEBVTT\n\n" + string.Join("\n\n", Enumerable.Range(1, 120).Select(i =>
+            $"{i}\n00:00:{i:D2}.000 --> 00:00:{i:D2}.500\nLine {i}"));
 
         _fs.ReadAllTextAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
-            .Returns(Task.FromResult(bigSrt));
+            .Returns(Task.FromResult(bigVtt));
         _chat.CompleteChatAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
             .Returns(Task.FromResult("translated chunk")); // unparseable — fallback to source text
 
@@ -161,10 +163,26 @@ public sealed class SrtTranslatorServiceTests
         await _sut.TranslateAsync(MakeJob(), "Bulgarian");
 
         Assert.NotNull(capturedOutput);
-        Assert.Contains("00:00:01,000 --> 00:00:03,000", capturedOutput);
-        Assert.Contains("00:00:05,000 --> 00:00:07,000", capturedOutput);
+        Assert.Contains("00:00:01.000 --> 00:00:03.000", capturedOutput);
+        Assert.Contains("00:00:05.000 --> 00:00:07.000", capturedOutput);
         Assert.Contains("Здравей свят", capturedOutput);
         Assert.Contains("Довиждане свят", capturedOutput);
+    }
+
+    [Fact]
+    public async Task TranslateAsync_OutputStartsWithWebVttHeader()
+    {
+        string? capturedOutput = null;
+        _fs.WriteAllTextAsync(
+                Arg.Any<string>(),
+                Arg.Do<string>(s => capturedOutput = s),
+                Arg.Any<CancellationToken>())
+            .Returns(Task.CompletedTask);
+
+        await _sut.TranslateAsync(MakeJob(), "Bulgarian");
+
+        Assert.NotNull(capturedOutput);
+        Assert.StartsWith("WEBVTT", capturedOutput);
     }
 
     [Fact]
@@ -186,7 +204,7 @@ public sealed class SrtTranslatorServiceTests
         Assert.Contains("Hello world", capturedOutput);
         Assert.Contains("Goodbye world", capturedOutput);
         // Timestamps must still come from the original
-        Assert.Contains("00:00:01,000 --> 00:00:03,000", capturedOutput);
+        Assert.Contains("00:00:01.000 --> 00:00:03.000", capturedOutput);
     }
 
     // ── Output file ───────────────────────────────────────────────────────────
@@ -196,7 +214,7 @@ public sealed class SrtTranslatorServiceTests
     {
         await _sut.TranslateAsync(MakeJob(), "Bulgarian");
         await _fs.Received(1).WriteAllTextAsync(
-            Arg.Is<string>(p => p.EndsWith("video_translated_Bulgarian.srt")),
+            Arg.Is<string>(p => p.EndsWith("video_translated_Bulgarian.vtt")),
             Arg.Any<string>(),
             Arg.Any<CancellationToken>());
     }
@@ -206,7 +224,7 @@ public sealed class SrtTranslatorServiceTests
     {
         await _sut.TranslateAsync(MakeJob(), "English");
         await _fs.Received(1).WriteAllTextAsync(
-            Arg.Is<string>(p => p.EndsWith("video_translated_English.srt")),
+            Arg.Is<string>(p => p.EndsWith("video_translated_English.vtt")),
             Arg.Any<string>(),
             Arg.Any<CancellationToken>());
     }
@@ -214,19 +232,19 @@ public sealed class SrtTranslatorServiceTests
     // ── State transitions ─────────────────────────────────────────────────────
 
     [Fact]
-    public async Task TranslateAsync_SetsTranslatedSrtFilePath()
+    public async Task TranslateAsync_SetsTranslatedVttFilePath()
     {
         var job = MakeJob();
         await _sut.TranslateAsync(job, "Bulgarian");
-        Assert.Contains("video_translated_Bulgarian.srt", job.TranslatedSrtFilePath);
+        Assert.Contains("video_translated_Bulgarian.vtt", job.TranslatedVttFilePath);
     }
 
     [Fact]
-    public async Task TranslateAsync_TransitionsStateToSrtTranslated()
+    public async Task TranslateAsync_TransitionsStateToVttTranslated()
     {
         await _sut.TranslateAsync(MakeJob(), "Bulgarian");
         await _repo.Received(1).UpdateAsync(
-            Arg.Is<VideoJob>(j => j.State == JobState.SrtTranslated),
+            Arg.Is<VideoJob>(j => j.State == JobState.VttTranslated),
             Arg.Any<CancellationToken>());
     }
 
@@ -246,26 +264,36 @@ public sealed class SrtTranslatorServiceTests
     [Fact]
     public void ParseBlocks_ExtractsTimestampAndText()
     {
-        var blocks = SrtTranslatorService.ParseBlocks(SampleSrt);
+        var blocks = VttTranslatorService.ParseBlocks(SampleVtt);
 
         Assert.Equal(2, blocks.Count);
-        Assert.Equal("00:00:01,000 --> 00:00:03,000", blocks[0].TimestampLine);
+        Assert.Equal("00:00:01.000 --> 00:00:03.000", blocks[0].TimestampLine);
         Assert.Equal("Hello world", blocks[0].Text);
-        Assert.Equal("00:00:05,000 --> 00:00:07,000", blocks[1].TimestampLine);
+        Assert.Equal("00:00:05.000 --> 00:00:07.000", blocks[1].TimestampLine);
         Assert.Equal("Goodbye world", blocks[1].Text);
+    }
+
+    [Fact]
+    public void ParseBlocks_SkipsWebVttHeader()
+    {
+        var blocks = VttTranslatorService.ParseBlocks(SampleVtt);
+
+        Assert.DoesNotContain(blocks, b => b.TimestampLine.Contains("WEBVTT") || b.Text.Contains("WEBVTT"));
     }
 
     [Fact]
     public void ParseBlocks_JoinsMultiLineText()
     {
-        const string srt = """
+        const string vtt = """
+            WEBVTT
+
             1
-            00:00:01,000 --> 00:00:03,000
+            00:00:01.000 --> 00:00:03.000
             Line one
             Line two
             """;
 
-        var blocks = SrtTranslatorService.ParseBlocks(srt);
+        var blocks = VttTranslatorService.ParseBlocks(vtt);
 
         Assert.Single(blocks);
         Assert.Equal("Line one Line two", blocks[0].Text);
@@ -274,13 +302,15 @@ public sealed class SrtTranslatorServiceTests
     [Fact]
     public void ParseBlocks_StripsInlineMarkup()
     {
-        const string srt = """
+        const string vtt = """
+            WEBVTT
+
             1
-            00:00:01,000 --> 00:00:03,000
+            00:00:01.000 --> 00:00:03.000
             <i>Hello</i> world
             """;
 
-        var blocks = SrtTranslatorService.ParseBlocks(srt);
+        var blocks = VttTranslatorService.ParseBlocks(vtt);
 
         Assert.Single(blocks);
         Assert.Equal("Hello world", blocks[0].Text);

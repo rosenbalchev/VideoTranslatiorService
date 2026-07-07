@@ -10,14 +10,14 @@ public enum JobState
     AudioExtracted,
 
     // ── Step 2 : subtitle extraction ────────────────────────────────────────
-    ExtractingSrt,
-    SrtExtracted,
+    ExtractingVtt,
+    VttExtracted,
 
-    // ── Step 3 : SRT translation (GPT-4o-mini) ───────────────────────────────
-    TranslatingSrt,
-    SrtTranslated,
+    // ── Step 3 : VTT translation (GPT-4o-mini) ───────────────────────────────
+    TranslatingVtt,
+    VttTranslated,
 
-    // ── Step 4 : Azure TTS synthesis (translated SRT → WAV) ─────────────────
+    // ── Step 4 : Azure TTS synthesis (translated VTT → WAV) ─────────────────
     SynthesisingAzureTts,
     AzureTtsSynthesised,
 

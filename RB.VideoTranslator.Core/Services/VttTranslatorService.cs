@@ -7,24 +7,24 @@ using RB.VideoTranslator.Domain.Interfaces;
 
 namespace RB.VideoTranslator.Core.Services;
 
-public sealed class SrtTranslatorService : ISrtTranslatorService
+public sealed class VttTranslatorService : IVttTranslatorService
 {
     private const int ChunkSize = 50;
 
     private readonly IVideoJobRepository _repo;
     private readonly IFileSystem _fs;
     private readonly IAzureChatEngine _chat;
-    private readonly ILogger<SrtTranslatorService> _logger;
+    private readonly ILogger<VttTranslatorService> _logger;
 
     // Matches "[N] translated text" lines in GPT responses.
     private static readonly Regex MarkerRx = new(@"^\[(\d+)\]\s*(.*)", RegexOptions.Compiled);
     private static readonly Regex MarkupRx = new(@"<[^>]+>|\{\\[^}]*\}", RegexOptions.Compiled);
 
-    public SrtTranslatorService(
+    public VttTranslatorService(
         IVideoJobRepository repo,
         IFileSystem fs,
         IAzureChatEngine chat,
-        ILogger<SrtTranslatorService> logger)
+        ILogger<VttTranslatorService> logger)
     {
         _repo   = repo;
         _fs     = fs;
@@ -34,20 +34,20 @@ public sealed class SrtTranslatorService : ISrtTranslatorService
 
     public async Task TranslateAsync(VideoJob job, string targetLanguage, CancellationToken ct = default)
     {
-        if (string.IsNullOrEmpty(job.SrtFilePath))
-            throw new InvalidOperationException($"Job {job.Id} has no SrtFilePath set.");
+        if (string.IsNullOrEmpty(job.VttFilePath))
+            throw new InvalidOperationException($"Job {job.Id} has no VttFilePath set.");
 
-        var content = await _fs.ReadAllTextAsync(job.SrtFilePath, ct);
+        var content = await _fs.ReadAllTextAsync(job.VttFilePath, ct);
 
         // Parse into structured blocks so timestamps are never sent to the model.
         var blocks = ParseBlocks(content);
 
         _logger.LogInformation(
-            "Translating {Count} SRT blocks to {Lang} in chunks of {Chunk} — job {Id}",
+            "Translating {Count} VTT blocks to {Lang} in chunks of {Chunk} — job {Id}",
             blocks.Count, targetLanguage, ChunkSize, job.Id);
 
         // Timestamps are owned entirely by this service and are never exposed to GPT.
-        // GPT translates text only; we reconstruct the SRT with original timing afterwards.
+        // GPT translates text only; we reconstruct the VTT with original timing afterwards.
         var systemPrompt =
             $"You are a subtitle translator. Translate subtitle text to {targetLanguage}. " +
             "Each input line has the format [N] text where N is a number. " +
@@ -82,8 +82,10 @@ public sealed class SrtTranslatorService : ISrtTranslatorService
             }
         }
 
-        // Reconstruct SRT with ORIGINAL timestamps + translated text.
-        var sb = new StringBuilder(blocks.Count * 80);
+        // Reconstruct VTT with ORIGINAL timestamps + translated text.
+        var sb = new StringBuilder(blocks.Count * 80 + 8);
+        sb.AppendLine("WEBVTT");
+        sb.AppendLine();
         for (int i = 0; i < blocks.Count; i++)
         {
             sb.AppendLine((i + 1).ToString());
@@ -95,23 +97,25 @@ public sealed class SrtTranslatorService : ISrtTranslatorService
         var baseName   = Path.GetFileNameWithoutExtension(job.OriginalFileName);
         var outputPath = Path.Combine(
             job.ProcessingFolderPath,
-            $"{baseName}_translated_{targetLanguage}.srt");
+            $"{baseName}_translated_{targetLanguage}.vtt");
 
         await _fs.WriteAllTextAsync(outputPath, sb.ToString(), ct);
 
-        job.TranslatedSrtFilePath = outputPath;
-        job.State                 = JobState.SrtTranslated;
+        job.TranslatedVttFilePath = outputPath;
+        job.State                 = JobState.VttTranslated;
         await _repo.UpdateAsync(job, ct);
 
-        _logger.LogInformation("Translated SRT written to {Path}", outputPath);
+        _logger.LogInformation("Translated VTT written to {Path}", outputPath);
     }
 
-    // Parses raw SRT content into structured blocks preserving the original timestamp line.
-    // Strips inline markup from text (same as SrtToAzureTtsService) and joins multi-line
+    // Parses raw VTT content into structured blocks preserving the original timestamp line.
+    // Strips inline markup from text (same as VttToAzureTtsService) and joins multi-line
     // entries into a single string — the TTS step expects one text string per entry.
-    internal static List<SrtBlock> ParseBlocks(string content)
+    // The leading "WEBVTT" header naturally falls out: it splits into its own single-line
+    // block, which is skipped by the `lines.Length < 2` guard below.
+    internal static List<VttBlock> ParseBlocks(string content)
     {
-        var blocks    = new List<SrtBlock>();
+        var blocks    = new List<VttBlock>();
         var rawBlocks = content
             .Replace("\r\n", "\n")
             .Split(["\n\n"], StringSplitOptions.RemoveEmptyEntries);
@@ -133,11 +137,11 @@ public sealed class SrtTranslatorService : ISrtTranslatorService
             var text = MarkupRx.Replace(string.Join(" ", textLines), "").Trim();
             if (string.IsNullOrEmpty(text)) continue;
 
-            blocks.Add(new SrtBlock(lines[tsIdx], text));
+            blocks.Add(new VttBlock(lines[tsIdx], text));
         }
 
         return blocks;
     }
 
-    internal readonly record struct SrtBlock(string TimestampLine, string Text);
+    internal readonly record struct VttBlock(string TimestampLine, string Text);
 }

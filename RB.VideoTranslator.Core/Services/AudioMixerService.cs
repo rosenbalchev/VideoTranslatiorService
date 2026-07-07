@@ -30,12 +30,12 @@ public sealed class AudioMixerService : IAudioMixerService
             throw new InvalidOperationException($"Job {job.Id} has no VoiceRemovedAudioPath set.");
         if (string.IsNullOrEmpty(job.AzureTtsAudioPath))
             throw new InvalidOperationException($"Job {job.Id} has no AzureTtsAudioPath set.");
-        if (string.IsNullOrEmpty(job.TranslatedSrtFilePath))
-            throw new InvalidOperationException($"Job {job.Id} has no TranslatedSrtFilePath set.");
+        if (string.IsNullOrEmpty(job.TranslatedVttFilePath))
+            throw new InvalidOperationException($"Job {job.Id} has no TranslatedVttFilePath set.");
 
-        // Derive base from the translated SRT so each language produces a distinct mixed file
+        // Derive base from the translated VTT so each language produces a distinct mixed file
         // (e.g. "video_translated_Bulgarian_mixed.wav" vs "video_translated_German_mixed.wav").
-        var baseName  = Path.GetFileNameWithoutExtension(job.TranslatedSrtFilePath);
+        var baseName  = Path.GetFileNameWithoutExtension(job.TranslatedVttFilePath);
         var outputWav = Path.Combine(job.ProcessingFolderPath, $"{baseName}_mixed.wav");
 
         _logger.LogInformation(

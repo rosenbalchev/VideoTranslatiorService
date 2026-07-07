@@ -5,18 +5,18 @@ using RB.VideoTranslator.Domain.Interfaces;
 
 namespace RB.VideoTranslator.Core.Services;
 
-public sealed class SrtExtractorService : ISrtExtractorService
+public sealed class VttExtractorService : IVttExtractorService
 {
     private readonly IVideoJobRepository _repo;
     private readonly IProcessRunner _processRunner;
     private readonly IFileSystem _fs;
-    private readonly ILogger<SrtExtractorService> _logger;
+    private readonly ILogger<VttExtractorService> _logger;
 
-    public SrtExtractorService(
+    public VttExtractorService(
         IVideoJobRepository repo,
         IProcessRunner processRunner,
         IFileSystem fs,
-        ILogger<SrtExtractorService> logger)
+        ILogger<VttExtractorService> logger)
     {
         _repo = repo;
         _processRunner = processRunner;
@@ -29,28 +29,28 @@ public sealed class SrtExtractorService : ISrtExtractorService
         if (string.IsNullOrEmpty(job.ExtractedAudioPath))
             throw new InvalidOperationException($"Job {job.Id} has no ExtractedAudioPath set.");
 
-        var scriptPath = Path.Combine(AppContext.BaseDirectory, "tools", "tool_wavToSrt_GPU.py");
+        var scriptPath = Path.Combine(AppContext.BaseDirectory, "tools", "tool_wavToVtt_GPU.py");
         if (!File.Exists(scriptPath))
             throw new FileNotFoundException($"Whisper tool not found: {scriptPath}");
 
         var baseName = Path.GetFileNameWithoutExtension(job.OriginalFileName);
-        var srtPath = Path.Combine(job.ProcessingFolderPath, $"{baseName}.srt");
+        var vttPath = Path.Combine(job.ProcessingFolderPath, $"{baseName}.vtt");
 
         _logger.LogInformation(
-            "Transcribing {Audio} → {Srt} (this may take a while)",
-            job.ExtractedAudioPath, srtPath);
+            "Transcribing {Audio} → {Vtt} (this may take a while)",
+            job.ExtractedAudioPath, vttPath);
 
         await _processRunner.RunAsync(
             pythonPath,
-            $"\"{scriptPath}\" \"{job.ExtractedAudioPath}\" \"{srtPath}\"",
+            $"\"{scriptPath}\" \"{job.ExtractedAudioPath}\" \"{vttPath}\"",
             ct);
-        if (!_fs.FileExists(srtPath))
-            throw new FileNotFoundException($"Whisper did not produce expected SRT output: {srtPath}");
+        if (!_fs.FileExists(vttPath))
+            throw new FileNotFoundException($"Whisper did not produce expected VTT output: {vttPath}");
 
-        job.SrtFilePath = srtPath;
-        job.State = JobState.SrtExtracted;
+        job.VttFilePath = vttPath;
+        job.State = JobState.VttExtracted;
         await _repo.UpdateAsync(job, ct);
 
-        _logger.LogInformation("SRT written to {Srt}", srtPath);
+        _logger.LogInformation("VTT written to {Vtt}", vttPath);
     }
 }

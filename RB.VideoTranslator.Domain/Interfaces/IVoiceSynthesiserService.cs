@@ -6,7 +6,7 @@ namespace RB.VideoTranslator.Domain.Interfaces;
 public interface IVoiceSynthesiserService
 {
     /// <summary>
-    /// Synthesises a voice audio track from the translated .srt file.
+    /// Synthesises a voice audio track from the translated .vtt file.
     /// Populates <see cref="VideoJob.SynthesisedVoicePath"/> and transitions state to
     /// <see cref="JobState.VoiceSynthesised"/>.
     /// </summary>

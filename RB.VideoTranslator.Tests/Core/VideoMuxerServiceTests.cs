@@ -34,26 +34,26 @@ public sealed class VideoMuxerServiceTests
         string? silentVideoPath   = "/proc/video_silent.mp4",
         string? extractedAudioPath = "/proc/video.wav",
         string  originalFileName  = "video.mp4",
-        string? srtFilePath       = "/proc/video.srt") => new()
+        string? vttFilePath       = "/proc/video.vtt") => new()
     {
         OriginalFileName      = originalFileName,
         InputFilePath         = "/input/video.mp4",
         ProcessingFolderPath  = "/proc",
         SilentVideoPath       = silentVideoPath,
         ExtractedAudioPath    = extractedAudioPath,
-        SrtFilePath           = srtFilePath,
+        VttFilePath           = vttFilePath,
     };
 
     private static IReadOnlyList<LanguageResult> OneLang(
         string lang           = "Bulgarian",
         string mixedAudioPath = "/proc/video_bg_mixed.wav",
-        string srtPath        = "/proc/video_translated_Bulgarian.srt") =>
-        [new LanguageResult(lang, mixedAudioPath, srtPath)];
+        string vttPath        = "/proc/video_translated_Bulgarian.vtt") =>
+        [new LanguageResult(lang, mixedAudioPath, vttPath)];
 
     private static IReadOnlyList<LanguageResult> TwoLangs() =>
     [
-        new LanguageResult("Bulgarian", "/proc/video_bg_mixed.wav", "/proc/video_bg.srt"),
-        new LanguageResult("English",   "/proc/video_en_mixed.wav", "/proc/video_en.srt"),
+        new LanguageResult("Bulgarian", "/proc/video_bg_mixed.wav", "/proc/video_bg.vtt"),
+        new LanguageResult("English",   "/proc/video_en_mixed.wav", "/proc/video_en.vtt"),
     ];
 
     // ── Guard checks ─────────────────────────────────────────────────────────
@@ -80,10 +80,10 @@ public sealed class VideoMuxerServiceTests
     }
 
     [Fact]
-    public async Task MuxAsync_ThrowsWhenSrtFilePathIsNull()
+    public async Task MuxAsync_ThrowsWhenVttFilePathIsNull()
     {
         await Assert.ThrowsAsync<InvalidOperationException>(
-            () => _sut.MuxAsync(MakeJob(srtFilePath: null), "ffmpeg", "/out", OneLang()));
+            () => _sut.MuxAsync(MakeJob(vttFilePath: null), "ffmpeg", "/out", OneLang()));
     }
 
     // ── ffmpeg invocation ─────────────────────────────────────────────────────
@@ -117,12 +117,12 @@ public sealed class VideoMuxerServiceTests
     }
 
     [Fact]
-    public async Task MuxAsync_ArgumentsContainOriginalSrtPath()
+    public async Task MuxAsync_ArgumentsContainOriginalVttPath()
     {
         await _sut.MuxAsync(MakeJob(), "ffmpeg", "/out", OneLang());
         await _runner.Received().RunAsync(
             Arg.Any<string>(),
-            Arg.Is<string>(a => a.Contains("video.srt")),
+            Arg.Is<string>(a => a.Contains("video.vtt")),
             Arg.Any<CancellationToken>());
     }
 
@@ -202,7 +202,7 @@ public sealed class VideoMuxerServiceTests
         await _sut.MuxAsync(MakeJob(originalFileName: "video.mkv"), "ffmpeg", "/out", OneLang());
         await _runner.Received().RunAsync(
             Arg.Any<string>(),
-            Arg.Is<string>(a => a.Contains("-c:s srt")),
+            Arg.Is<string>(a => a.Contains("-c:s webvtt")),
             Arg.Any<CancellationToken>());
     }
 
@@ -230,13 +230,13 @@ public sealed class VideoMuxerServiceTests
     }
 
     [Fact]
-    public void BuildFfmpegArgs_SrtInputsAppearAfterAudioInputs()
+    public void BuildFfmpegArgs_VttInputsAppearAfterAudioInputs()
     {
         var job  = MakeJob();
         var args = VideoMuxerService.BuildFfmpegArgs(job, TwoLangs(), "mov_text", "/out/video.mp4");
-        // 1 video + 1 original audio + 2 lang audio = first SRT at input index 4
-        // index 4: original SRT, 5: Bulgarian, 6: English
-        Assert.Contains("-map 4:s:0", args); // original SRT
+        // 1 video + 1 original audio + 2 lang audio = first VTT at input index 4
+        // index 4: original VTT, 5: Bulgarian, 6: English
+        Assert.Contains("-map 4:s:0", args); // original VTT
         Assert.Contains("-map 5:s:0", args); // Bulgarian
         Assert.Contains("-map 6:s:0", args); // English
     }

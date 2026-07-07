@@ -8,7 +8,7 @@ using RB.VideoTranslator.Domain.Models;
 
 namespace RB.VideoTranslator.Core.Services;
 
-public sealed class SrtToAzureTtsService : ISrtToAzureTtsService
+public sealed class VttToAzureTtsService : IVttToAzureTtsService
 {
     // Azure Speech SDK cancels a request if it receives no audio frame for 3 000 ms.
     // The server generates silence for <break> elements as a single delayed frame, so a
@@ -22,21 +22,21 @@ public sealed class SrtToAzureTtsService : ISrtToAzureTtsService
     private readonly IVideoJobRepository _repo;
     private readonly IFileSystem _fs;
     private readonly IAzureSpeechEngine _engine;
-    private readonly ILogger<SrtToAzureTtsService> _logger;
+    private readonly ILogger<VttToAzureTtsService> _logger;
 
     private static readonly Regex TimeLineRx = new(
-        @"(\d{2}):(\d{2}):(\d{2}),(\d{3})\s*-->\s*(\d{2}):(\d{2}):(\d{2}),(\d{3})",
+        @"(\d{2}):(\d{2}):(\d{2})\.(\d{3})\s*-->\s*(\d{2}):(\d{2}):(\d{2})\.(\d{3})",
         RegexOptions.Compiled);
 
     private static readonly Regex MarkupRx = new(
         @"<[^>]+>|\{\\[^}]*\}",
         RegexOptions.Compiled);
 
-    public SrtToAzureTtsService(
+    public VttToAzureTtsService(
         IVideoJobRepository repo,
         IFileSystem fs,
         IAzureSpeechEngine engine,
-        ILogger<SrtToAzureTtsService> logger)
+        ILogger<VttToAzureTtsService> logger)
     {
         _repo   = repo;
         _fs     = fs;
@@ -52,18 +52,18 @@ public sealed class SrtToAzureTtsService : ISrtToAzureTtsService
         string lang = "en-US",
         CancellationToken ct = default)
     {
-        if (string.IsNullOrEmpty(job.TranslatedSrtFilePath))
-            throw new InvalidOperationException($"Job {job.Id} has no TranslatedSrtFilePath set.");
+        if (string.IsNullOrEmpty(job.TranslatedVttFilePath))
+            throw new InvalidOperationException($"Job {job.Id} has no TranslatedVttFilePath set.");
 
-        var srtContent = await _fs.ReadAllTextAsync(job.TranslatedSrtFilePath, ct);
-        var entries    = ParseSrt(srtContent);
+        var vttContent = await _fs.ReadAllTextAsync(job.TranslatedVttFilePath, ct);
+        var entries    = ParseVtt(vttContent);
 
         if (entries.Count == 0)
-            throw new InvalidOperationException($"No subtitle entries found in {job.SrtFilePath}.");
+            throw new InvalidOperationException($"No subtitle entries found in {job.VttFilePath}.");
 
-        // Use the translated SRT filename as base so each language gets its own output files
+        // Use the translated VTT filename as base so each language gets its own output files
         // (e.g. "video_translated_Bulgarian_azure_tts.wav" vs "video_translated_German_azure_tts.wav").
-        var baseName = Path.GetFileNameWithoutExtension(job.TranslatedSrtFilePath);
+        var baseName = Path.GetFileNameWithoutExtension(job.TranslatedVttFilePath);
 
         // Write full SSML to disk for inspection (includes all breaks, even large ones)
         var fullSsml = BuildSsml(entries, voiceName, lang);
@@ -78,13 +78,13 @@ public sealed class SrtToAzureTtsService : ISrtToAzureTtsService
             : FallbackCharsPerSecond;
 
         _logger.LogInformation(
-            "Synthesising Azure TTS audio ({Voice}/{Lang}) from {Srt} — {Count} entries. " +
+            "Synthesising Azure TTS audio ({Voice}/{Lang}) from {Vtt} — {Count} entries. " +
             "Subtitle avg pace: {Cps:F1} chars/sec. SSML: {Ssml}",
-            voiceName, lang, job.TranslatedSrtFilePath, entries.Count, charsPerSecond, ssmlPath);
+            voiceName, lang, job.TranslatedVttFilePath, entries.Count, charsPerSecond, ssmlPath);
 
         // One TTS call per subtitle entry. Leading silence per entry is derived from the
         // absolute original timestamp so the audio track aligns with the source video.
-        // The translated SRT is NOT rewritten — subtitle display times are kept identical
+        // The translated VTT is NOT rewritten — subtitle display times are kept identical
         // to the original so all language tracks share the same visual timing.
         var audioData = await SynthesisePerEntryAsync(entries, endpointUrl, subscriptionKey, voiceName, lang, charsPerSecond, job.AudioChannels, ct);
 
@@ -108,7 +108,7 @@ public sealed class SrtToAzureTtsService : ISrtToAzureTtsService
     private const int MaxTtsRetries = 3;
 
     private async Task<byte[]> SynthesisePerEntryAsync(
-        IReadOnlyList<SrtEntry> entries,
+        IReadOnlyList<VttEntry> entries,
         string endpointUrl,
         string subscriptionKey,
         string voiceName,
@@ -257,15 +257,15 @@ public sealed class SrtToAzureTtsService : ISrtToAzureTtsService
 
     // Groups consecutive entries into segments such that no gap between neighbours
     // within a segment exceeds maxGapMs and no segment has more than maxEntries entries.
-    internal static List<List<SrtEntry>> SplitIntoSegments(
-        IReadOnlyList<SrtEntry> entries,
+    internal static List<List<VttEntry>> SplitIntoSegments(
+        IReadOnlyList<VttEntry> entries,
         int maxGapMs,
         int maxEntries = int.MaxValue)
     {
-        var segments = new List<List<SrtEntry>>();
+        var segments = new List<List<VttEntry>>();
         if (entries.Count == 0) return segments;
 
-        var current = new List<SrtEntry> { entries[0] };
+        var current = new List<VttEntry> { entries[0] };
 
         for (int i = 1; i < entries.Count; i++)
         {
@@ -273,7 +273,7 @@ public sealed class SrtToAzureTtsService : ISrtToAzureTtsService
             if (gap > maxGapMs || current.Count >= maxEntries)
             {
                 segments.Add(current);
-                current = new List<SrtEntry>();
+                current = new List<VttEntry>();
             }
             current.Add(entries[i]);
         }
@@ -294,7 +294,7 @@ public sealed class SrtToAzureTtsService : ISrtToAzureTtsService
     public const double MaxRatePct     = 105.0;
 
     internal static string BuildSsml(
-        IReadOnlyList<SrtEntry> entries,
+        IReadOnlyList<VttEntry> entries,
         string voiceName,
         string lang,
         int startOffsetMs = 0)
@@ -310,7 +310,7 @@ public sealed class SrtToAzureTtsService : ISrtToAzureTtsService
             var gap = Math.Max(0, entry.StartMs - curMs);
             if (gap > 0)
                 sb.Append($"<break time=\"{gap}ms\"/>");
-                
+
             var text        = XmlEscape(entry.Text);
             var availableMs = entry.EndMs - entry.StartMs;
             var rate        = SpeechRateFor(entry.Text, availableMs);
@@ -351,11 +351,13 @@ public sealed class SrtToAzureTtsService : ISrtToAzureTtsService
         return delta >= 0 ? $"+{delta:F0}%" : $"{delta:F0}%";
     }
 
-    // ── SRT parser ────────────────────────────────────────────────────────────
+    // ── VTT parser ────────────────────────────────────────────────────────────
 
-    internal static List<SrtEntry> ParseSrt(string content)
+    // The leading "WEBVTT" header naturally falls out: it splits into its own single-line
+    // block, which is skipped by the `lines.Length < 2` guard below.
+    internal static List<VttEntry> ParseVtt(string content)
     {
-        var entries = new List<SrtEntry>();
+        var entries = new List<VttEntry>();
         var blocks  = Regex.Split(content.Replace("\r\n", "\n").Trim(), @"\n\s*\n");
 
         foreach (var block in blocks)
@@ -379,7 +381,7 @@ public sealed class SrtToAzureTtsService : ISrtToAzureTtsService
             text = Regex.Replace(text, @"\s+", " ").Trim();
 
             if (!string.IsNullOrEmpty(text))
-                entries.Add(new SrtEntry(startMs, endMs, text));
+                entries.Add(new VttEntry(startMs, endMs, text));
         }
 
         return entries;
@@ -519,4 +521,4 @@ public sealed class SrtToAzureTtsService : ISrtToAzureTtsService
             .Replace(">", "&gt;");
 }
 
-internal sealed record SrtEntry(int StartMs, int EndMs, string Text);
+internal sealed record VttEntry(int StartMs, int EndMs, string Text);

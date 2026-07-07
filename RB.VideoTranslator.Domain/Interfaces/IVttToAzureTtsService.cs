@@ -3,10 +3,10 @@ using RB.VideoTranslator.Domain.Enums;
 
 namespace RB.VideoTranslator.Domain.Interfaces;
 
-public interface ISrtToAzureTtsService
+public interface IVttToAzureTtsService
 {
     /// <summary>
-    /// Synthesises speech from <see cref="VideoJob.SrtFilePath"/> using Azure TTS.
+    /// Synthesises speech from <see cref="VideoJob.TranslatedVttFilePath"/> using Azure TTS.
     /// Populates <see cref="VideoJob.AzureTtsAudioPath"/> and transitions state to
     /// <see cref="JobState.AzureTtsSynthesised"/>.
     /// </summary>

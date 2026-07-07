@@ -30,7 +30,7 @@ public sealed class AzureSpeechEngine : IAzureSpeechEngine
     }
 
     // Reads channel count, sample rate, and bit depth straight from the WAV header so
-    // callers (SrtToAzureTtsService) never need to inspect the raw bytes themselves.
+    // callers (VttToAzureTtsService) never need to inspect the raw bytes themselves.
     // Duration comes directly from Azure's own SpeechSynthesisResult.AudioDuration —
     // no need to recompute it from the PCM byte count.
     private static SpeechAudioResult ParseWav(byte[] wav, int durationMs)

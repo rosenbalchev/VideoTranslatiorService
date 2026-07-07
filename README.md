@@ -130,15 +130,15 @@ WorkingFolderPath\input
 [SeparatingMedia]       ffmpeg — extract audio WAV + produce silent MP4
     │
     ▼
-[ExtractingSrt]         Whisper — transcribe audio → SRT subtitle file
+[ExtractingVtt]         Whisper — transcribe audio → WebVTT subtitle file
     │
     ▼
 [RemovingVoice]         Demucs htdemucs — separate vocals from music bed → no_vocals.flac
     │
     ▼  ┌─────────────────── repeated for each target language ───────────────────┐
-[TranslatingSrt]        GPT-4o-mini — translate SRT (50 entries/call)            │
+[TranslatingVtt]        GPT-4o-mini — translate VTT (50 entries/call)            │
     │  │                                                                          │
-[SynthesisingAzureTts]  Azure Neural TTS — synthesise translated SRT → WAV       │
+[SynthesisingAzureTts]  Azure Neural TTS — synthesise translated VTT → WAV       │
                          • Per-entry synthesis, one API call per subtitle entry   │
                          • <prosody rate> adjusts speed to fit each window        │
                          • Absolute-timestamp leading silence keeps sync          │
@@ -148,7 +148,7 @@ WorkingFolderPath\input
     │  └───────────────────────────────────────────────────────────────────────── ┘
     ▼
 [AddingToVideo]         ffmpeg — mux silent MP4 + original + all language tracks
-                         + all translated SRTs as soft subtitles → OutputFolderPath
+                         + all translated VTTs as soft subtitles → OutputFolderPath
     │
     ▼
 Completed  ✓
@@ -167,7 +167,7 @@ Completed  ✓
 | `Dbo` | `VideoJob` — root entity, tracks all file paths and current pipeline state |
 | `Models` | `PipelineOptions`, `LanguageResult` — externally visible pipeline configuration/results |
 | `Exceptions` | `StepNotImplementedException` |
-| `Interfaces` | All service contracts (`IJobService`, `IMediaSeparatorService`, `ISrtExtractorService`, `IVoiceRemoverService`, `ISrtTranslatorService`, `ISrtToAzureTtsService`, `IAudioMixerService`, `IVideoMuxerService`, `IPipelineOrchestrator`, `IAzureSpeechEngine`, `IAzureChatEngine`, `IProcessRunner`, `IFileSystem`, `IVideoJobRepository`, `IPipelineRunner`) |
+| `Interfaces` | All service contracts (`IJobService`, `IMediaSeparatorService`, `IVttExtractorService`, `IVoiceRemoverService`, `IVttTranslatorService`, `IVttToAzureTtsService`, `IAudioMixerService`, `IVideoMuxerService`, `IPipelineOrchestrator`, `IAzureSpeechEngine`, `IAzureChatEngine`, `IProcessRunner`, `IFileSystem`, `IVideoJobRepository`, `IPipelineRunner`) |
 
 ### Data layer (`RB.VideoTranslator.Data`)
 
@@ -182,10 +182,10 @@ Completed  ✓
 |---------|---------|
 | `JobService` | Move file to processing folder, create job record, transition states |
 | `MediaSeparatorService` | ffmpeg — extract audio + produce silent video |
-| `SrtExtractorService` | Whisper — transcribe audio to SRT |
+| `VttExtractorService` | Whisper — transcribe audio to VTT |
 | `VoiceRemoverService` | Demucs — separate vocals from music bed |
-| `SrtTranslatorService` | GPT-4o-mini — translate SRT to target language |
-| `SrtToAzureTtsService` | Azure TTS — synthesise WAV from translated SRT |
+| `VttTranslatorService` | GPT-4o-mini — translate VTT to target language |
+| `VttToAzureTtsService` | Azure TTS — synthesise WAV from translated VTT |
 | `AudioMixerService` | ffmpeg amix — blend no_vocals + TTS audio |
 | `VideoMuxerService` | ffmpeg — mux video + all audio tracks + embedded subtitles |
 | `PipelineOrchestrator` | Drives the state machine; resets interrupted jobs on restart |
@@ -237,9 +237,9 @@ dotnet test RB.VideoTranslator.slnx --verbosity normal
 |------|------|----------------|
 | `JobService` | `Core/JobServiceTests.cs` | File move, job creation, state transitions, error paths |
 | `MediaSeparatorService` | `Core/MediaSeparatorServiceTests.cs` | Path building, ffmpeg args, state update, missing-output error |
-| `SrtExtractorService` | `Core/SrtExtractorServiceTests.cs` | Whisper invocation, output path, state transition |
-| `SrtTranslatorService` | `Core/SrtTranslatorServiceTests.cs` | GPT chunking (50/call), system prompt contains target language, output path, state transition |
-| `SrtToAzureTtsService` | `Core/SrtToAzureTtsServiceTests.cs` | Per-entry SSML, `<prosody rate>` logic, silence padding, WAV concatenation, retry on failure, silence fallback |
+| `VttExtractorService` | `Core/VttExtractorServiceTests.cs` | Whisper invocation, output path, state transition |
+| `VttTranslatorService` | `Core/VttTranslatorServiceTests.cs` | GPT chunking (50/call), system prompt contains target language, output path, state transition |
+| `VttToAzureTtsService` | `Core/VttToAzureTtsServiceTests.cs` | Per-entry SSML, `<prosody rate>` logic, silence padding, WAV concatenation, retry on failure, silence fallback |
 | `VoiceRemoverService` | `Core/VoiceRemoverServiceTests.cs` | Demucs args, output path detection, state transition |
 | `AudioMixerService` | `Core/AudioMixerServiceTests.cs` | ffmpeg amix args, language-specific output path, state transition, missing-output error |
 | `VideoMuxerService` | `Core/VideoMuxerServiceTests.cs` | Multi-stream ffmpeg args, apad filter, Original/language metadata, subtitle codec (MP4/MKV), output folder |
@@ -258,12 +258,12 @@ VideoJobs
   ProcessingVideoPath   TEXT   after SeparatingMedia
   ExtractedAudioPath    TEXT   after SeparatingMedia
   SilentVideoPath       TEXT   after SeparatingMedia
-  SrtFilePath           TEXT   after ExtractingSrt
+  VttFilePath           TEXT   after ExtractingVtt
   VoiceRemovedAudioPath TEXT   after RemovingVoice
-  TranslatedSrtFilePath TEXT   after TranslatingSrt  (last language processed)
+  TranslatedVttFilePath TEXT   after TranslatingVtt  (last language processed)
   AzureTtsAudioPath     TEXT   after SynthesisingAzureTts  (last language processed)
   MixedAudioPath        TEXT   after MixingAudio  (last language processed)
-  LanguageResultsJson   TEXT   JSON array of {Language, MixedAudioPath, TranslatedSrtFilePath}
+  LanguageResultsJson   TEXT   JSON array of {Language, MixedAudioPath, TranslatedVttFilePath}
   OutputFilePath        TEXT   after AddingToVideo
   State                 TEXT   enum stored as string
   ErrorMessage          TEXT
