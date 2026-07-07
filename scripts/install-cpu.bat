@@ -32,6 +32,13 @@ if "!WORK_FOLDER!"=="" (
     exit /b 1
 )
 
+:: ── Read HfToken from appsettings.json (optional — needed for diarization) ──
+set HF_TOKEN_VALUE=
+for /f "delims=" %%i in ('powershell -NoProfile -Command ^
+    "(Get-Content '%APPSETTINGS%' -Raw | ConvertFrom-Json).RBVideoTranslator.HfToken"') do (
+    set HF_TOKEN_VALUE=%%i
+)
+
 echo  Working folder : !WORK_FOLDER!
 set VENV_PATH=!WORK_FOLDER!\rb.video.translator
 echo  Virtual env    : !VENV_PATH!
@@ -56,22 +63,22 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo [1/6] Installing FFmpeg ^(system dependency^)...
+echo [1/8] Installing FFmpeg ^(system dependency^)...
 winget install -e --id Gyan.FFmpeg.Shared
 if errorlevel 1 ( echo ERROR: Failed to install FFmpeg. Make sure winget is available. & exit /b 1 )
 
-echo [2/6] Creating virtual environment "rb.video.translator" in working folder...
+echo [2/8] Creating virtual environment "rb.video.translator" in working folder...
 py -3.12 -m venv "!VENV_PATH!"
 if errorlevel 1 ( echo ERROR: Failed to create virtual environment. & exit /b 1 )
 
-echo [3/6] Activating environment...
+echo [3/8] Activating environment...
 call "!VENV_PATH!\Scripts\activate.bat"
 if errorlevel 1 ( echo ERROR: Failed to activate virtual environment. & exit /b 1 )
 
-echo [4/6] Upgrading pip...
+echo [4/8] Upgrading pip...
 python -m pip install --upgrade pip --quiet
 
-echo [5/6] Installing PyTorch 2.5.1 ^(CPU^) + Demucs...
+echo [5/8] Installing PyTorch 2.5.1 ^(CPU^) + Demucs...
 echo        ^(This can take several minutes - PyTorch is a large download^)
 echo        ^(Pinned to 2.5.1 — 2.6+ requires torchcodec which has no Windows build^)
 pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cpu
@@ -81,9 +88,23 @@ if errorlevel 1 ( echo ERROR: Failed to install soundfile. & exit /b 1 )
 pip install demucs
 if errorlevel 1 ( echo ERROR: Failed to install Demucs. & exit /b 1 )
 
-echo [6/6] Installing faster-whisper...
-pip install faster-whisper
-if errorlevel 1 ( echo ERROR: Failed to install faster-whisper. & exit /b 1 )
+echo [6/8] Installing WhisperX ^(transcription + speaker diarization^)...
+echo        ^(Installed after PyTorch so the 2.5.1 pin above is kept^)
+pip install whisperx
+if errorlevel 1 ( echo ERROR: Failed to install WhisperX. & exit /b 1 )
+
+echo [7/8] Installing librosa ^(pitch-based gender estimation^)...
+pip install librosa
+if errorlevel 1 ( echo ERROR: Failed to install librosa. & exit /b 1 )
+
+echo [8/8] Caching HuggingFace token for speaker diarization...
+if not "!HF_TOKEN_VALUE!"=="" (
+    huggingface-cli login --token "!HF_TOKEN_VALUE!" --add-to-git-credential false
+    if errorlevel 1 ( echo WARNING: HuggingFace login failed — check the token in appsettings.json. ) else ( echo  HuggingFace token cached. )
+) else (
+    echo        Skipped — RBVideoTranslator.HfToken is empty in appsettings.json.
+    echo        Set it and re-run this script, or set the HF_TOKEN env var manually.
+)
 
 :: ── Write VenvPath back to appsettings.json ───────────────────────────────────
 echo.
@@ -99,10 +120,17 @@ echo ============================================================
 echo.
 echo  Verify the installation:
 echo    "!VENV_PATH!\Scripts\activate"
-echo    python -c "import faster_whisper; print('faster-whisper OK')"
+echo    python -c "import whisperx; print('WhisperX OK')"
+echo    python -c "import librosa; print('librosa OK')"
 echo    python -c "import torch; print('PyTorch OK')"
 echo    python -c "import demucs; print('Demucs OK')"
 echo    ffmpeg -version
+echo.
+echo  Speaker diarization needs a HuggingFace token ^(one-time setup^):
+echo    1. Accept terms at https://huggingface.co/pyannote/speaker-diarization-3.1
+echo    2. Accept terms at https://huggingface.co/pyannote/segmentation-3.0
+echo    3. Create a read-scoped token at https://huggingface.co/settings/tokens
+echo    4. Put it in RBVideoTranslator.HfToken in appsettings.json, then re-run this script
 echo ============================================================
 
 endlocal

@@ -19,6 +19,13 @@ public sealed class PipelineOptions
     public string FfmpegPath { get; set; } = "ffmpeg";
     public string PythonPath { get; set; } = "python";
     public string DemucsPath { get; set; } = "python";
+
+    /// <summary>
+    /// HuggingFace access token for the gated pyannote speaker-diarization models used by
+    /// tool_wavToVtt_*.py. An install script logs this into the venv's HuggingFace cache
+    /// (via <c>huggingface-cli login</c>) so it does not need to be set as an env var at runtime.
+    /// </summary>
+    public string HfToken { get; set; } = string.Empty;
     public string AzureSubscriptionKey { get; set; } = string.Empty;
     public string AzureEndpointUrl { get; set; } = string.Empty;
     public string AzureOpenAiEndpoint { get; set; } = string.Empty;
