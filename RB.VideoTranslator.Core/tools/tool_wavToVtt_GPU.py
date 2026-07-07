@@ -18,7 +18,21 @@
 
 import argparse
 import os
+import sys
 from pathlib import Path
+
+# ctranslate2 (whisperx's transcription backend) lazily dlopens cuBLAS/cuDNN
+# on first inference call, using search flags that ignore os.add_dll_directory.
+# When this script is launched as a subprocess (not via venv activate.bat),
+# PATH doesn't include the venv's nvidia-*-cu12 packages, so that load fails
+# with "Could not locate cudnn_ops_infer64_8.dll" even though the file exists.
+# Prepending to PATH is the one mechanism every DLL loader on Windows honours.
+if sys.platform == "win32":
+    _site_packages = Path(sys.executable).parent.parent / "Lib" / "site-packages"
+    _nvidia_dir = _site_packages / "nvidia"
+    if _nvidia_dir.is_dir():
+        _nvidia_bins = [str(p) for p in _nvidia_dir.glob("*/bin")]
+        os.environ["PATH"] = os.pathsep.join(_nvidia_bins) + os.pathsep + os.environ.get("PATH", "")
 
 import numpy as np
 import librosa

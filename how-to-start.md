@@ -73,12 +73,15 @@ The install scripts require Python 3.12 specifically (`py -3.12`).
 The Whisper step also detects **who is speaking** and estimates each speaker's gender by pitch, writing them as `NOTE Speaker2 (estimated: female)` comments above each VTT cue. This uses gated pyannote models, so it needs a one-time HuggingFace token. Skip this if you don't need speaker labels — transcription still works without it.
 
 1. Create a free account at https://huggingface.co/join (or log in if you have one).
-2. Accept the model terms on both gated model pages (click **"Agree and access repository"** on each):
+2. Accept the model terms on **both** gated model pages individually (click **"Agree and access repository"** on each):
    - https://huggingface.co/pyannote/speaker-diarization-3.1
    - https://huggingface.co/pyannote/segmentation-3.0
+
+   > **Both are required, separately.** Accepting only one is not enough — diarization loads `segmentation-3.0` as an internal dependency of `speaker-diarization-3.1`, so a token that works fine for one will still fail on the other. The failure is also misleading: it prints *"Could not download '...' model. It might be because the model is private or gated..."* even when your token is completely valid — that message fires for *any* download failure, not just missing access. If you see it, re-check both URLs above rather than assuming the token itself is wrong.
+
 3. Go to https://huggingface.co/settings/tokens → **New token** → give it any name → role **Read** is enough → **Generate**.
 4. Copy the generated token (starts with `hf_...`) into `HfToken` in `appsettings.json`.
-5. Run (or re-run) the install script from Step 4 below — its last step calls `huggingface-cli login` with this token and caches it in the venv, so it is never needed again at runtime (no environment variable to set).
+5. Run (or re-run) the install script from Step 4 below — its last step calls `hf auth login` with this token and caches it to your Windows user profile (`%USERPROFILE%\.cache\huggingface\token`), so it is never needed again at runtime (no environment variable to set, and it's shared across any venv for this Windows account).
 
 ---
 
@@ -215,3 +218,7 @@ The orchestrator reads the last committed state from the SQLite database (`<Work
 | `No voice configured for language 'X'` | Language not in voice map | Add an entry to `PipelineOrchestrator.VoiceMap` |
 | Job stuck after restart | Unexpected state in DB | Check `ErrorMessage` column in `videotranslator.db` |
 | `Speaker diarization requires a HuggingFace token` | `HfToken` empty/not cached | Set `HfToken` in `appsettings.json` and re-run the install script, or pass `--no-diarize` for plain transcription |
+| `Could not download 'pyannote/segmentation-3.0' model` (or `speaker-diarization-3.1`), even though the token is valid | Only one of the two gated model pages was accepted — see the note in Step 3 | Visit and accept terms at **both** https://huggingface.co/pyannote/speaker-diarization-3.1 and https://huggingface.co/pyannote/segmentation-3.0 with the account that owns the token |
+| `AssertionError: Torch not compiled with CUDA enabled` after a previously-working GPU install | An unpinned `pip install whisperx` (or its `pyannote-audio`/`nvidia-cudnn-cu12` dependencies) upgraded, silently replacing the CUDA-pinned PyTorch with a CPU-only build from PyPI | Re-run `install-cuda.bat` — it now pins `whisperx==3.4.2`, `pyannote-audio==3.4.0`, `speechbrain==1.0.3`, `nvidia-cudnn-cu12==8.9.7.29` for exactly this reason. If a venv is already broken this way, it's usually faster to delete it and re-run the install script fresh than to fix packages one at a time |
+| `Could not locate cudnn_ops_infer64_8.dll. Please make sure it is in your library path!` | cuDNN 9 got installed instead of the 8.x line ctranslate2 needs, or (if the DLL is actually present) the venv's `nvidia-*-cu12` package folders aren't on `PATH` for this process | `tool_wavToVtt_GPU.py` adds those folders to `PATH` automatically at startup — if you still see this, re-run `install-cuda.bat` to restore the pinned `nvidia-cudnn-cu12==8.9.7.29` |
+| HuggingFace login step crashes with `UnicodeEncodeError: 'charmap' codec can't encode characters` | The deprecated `huggingface-cli login` prints a warning with an emoji that the default Windows `cp1252` console can't render | Already fixed in the install scripts (they use `hf auth login` with `PYTHONUTF8=1`) — re-run the install script if you're on an older copy |

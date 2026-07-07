@@ -84,8 +84,18 @@ pip install demucs
 if errorlevel 1 ( echo ERROR: Failed to install Demucs. & exit /b 1 )
 
 echo [6/8] Installing WhisperX ^(transcription + speaker diarization^) + CUDA runtime libs...
-echo        ^(Installed after PyTorch so the 2.5.1 pin above is kept^)
-pip install whisperx nvidia-cublas-cu12 nvidia-cudnn-cu12
+echo        ^(whisperx pinned to 3.4.2 — 3.5+ requires torch 2.7.1+, which would
+echo        silently upgrade the CUDA-pinned torch above to a CPU-only build via PyPI.
+echo        pyannote-audio pinned to 3.4.0 — 4.0+ requires torch 2.8+ / torchcodec,
+echo        same trap, pulled in transitively by whisperx's unbounded requirement.
+echo        nvidia-cudnn-cu12 pinned to the 8.x line — ctranslate2 ^(whisperx's
+echo        transcription backend, pinned ^<4.5.0^) needs cuDNN 8's split libraries
+echo        ^(cudnn_ops_infer64_8.dll^); cuDNN 9 ^(the unpinned default^) removed them.
+echo        speechbrain pinned to 1.0.3 — 1.1.0 adds a lazy-import k2 integration
+echo        that crashes under Python 3.12 when k2 is not installed ^(hasattr no
+echo        longer swallows ImportError^), which is triggered by pytorch_lightning's
+echo        inspect.stack^(^) call while loading pyannote's VAD model^)
+pip install whisperx==3.4.2 pyannote-audio==3.4.0 speechbrain==1.0.3 nvidia-cublas-cu12 "nvidia-cudnn-cu12==8.9.7.29"
 if errorlevel 1 ( echo ERROR: Failed to install WhisperX. & exit /b 1 )
 
 echo [7/8] Installing librosa ^(pitch-based gender estimation^)...
@@ -94,7 +104,10 @@ if errorlevel 1 ( echo ERROR: Failed to install librosa. & exit /b 1 )
 
 echo [8/8] Caching HuggingFace token for speaker diarization...
 if not "!HF_TOKEN_VALUE!"=="" (
-    huggingface-cli login --token "!HF_TOKEN_VALUE!" --add-to-git-credential false
+    :: huggingface-cli is deprecated in favour of `hf`, and its deprecation-notice
+    :: emoji crashes with UnicodeEncodeError on the default cp1252 console — force UTF-8.
+    set PYTHONUTF8=1
+    hf auth login --token "!HF_TOKEN_VALUE!"
     if errorlevel 1 ( echo WARNING: HuggingFace login failed — check the token in appsettings.json. ) else ( echo  HuggingFace token cached. )
 ) else (
     echo        Skipped — RBVideoTranslator.HfToken is empty in appsettings.json.
