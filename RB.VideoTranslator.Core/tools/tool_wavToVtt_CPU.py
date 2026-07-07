@@ -40,18 +40,31 @@ def format_time_short(seconds: float) -> str:
     return f"{hours:02}:{minutes:02}:{seconds:02}"
 
 
-def find_longest_segment_per_speaker(segments: list) -> dict:
-    """For each speaker, the segment with the longest speaking duration (end - start)."""
+MIN_SAMPLE_DURATION_SECONDS = 4.0
+
+
+def find_speaker_sample_segment(segments: list) -> dict:
+    """For each speaker, the sample segment used for the header/speaker-sample extraction:
+    the FIRST segment (chronologically) longer than MIN_SAMPLE_DURATION_SECONDS, so the
+    sample is available as early as possible rather than wherever the single longest
+    utterance happens to fall. Falls back to that speaker's longest segment overall if
+    none of their segments clear the threshold."""
+    first_over_threshold: dict[str, dict] = {}
     longest: dict[str, dict] = {}
     for segment in segments:
         speaker = segment.get("speaker")
         if speaker is None:
             continue
         duration = segment["end"] - segment["start"]
-        current = longest.get(speaker)
-        if current is None or duration > current["duration"]:
+
+        if speaker not in first_over_threshold and duration > MIN_SAMPLE_DURATION_SECONDS:
+            first_over_threshold[speaker] = {"duration": duration, "start": segment["start"], "end": segment["end"]}
+
+        current_longest = longest.get(speaker)
+        if current_longest is None or duration > current_longest["duration"]:
             longest[speaker] = {"duration": duration, "start": segment["start"], "end": segment["end"]}
-    return longest
+
+    return {**longest, **first_over_threshold}
 
 
 def estimate_speaker_genders(audio: np.ndarray, segments: list) -> dict:
@@ -140,7 +153,7 @@ def transcribe_to_vtt(
             if speaker is not None and speaker not in speaker_labels:
                 speaker_labels[speaker] = f"Speaker{len(speaker_labels) + 1}"
 
-    longest_segments = find_longest_segment_per_speaker(segments) if diarize else {}
+    sample_segments = find_speaker_sample_segment(segments) if diarize else {}
 
     with output_file.open("w", encoding="utf-8") as f:
         f.write("WEBVTT\n\n")
@@ -151,9 +164,9 @@ def transcribe_to_vtt(
             f.write(f"The conversation contains {len(speaker_labels)} {noun}.\n")
             for speaker, label in speaker_labels.items():
                 gender, pitch_hz = speaker_genders.get(speaker, ("unknown", None))
-                longest = longest_segments.get(speaker)
-                start_short = format_time_short(longest["start"]) if longest else "00:00:00"
-                end_short = format_time_short(longest["end"]) if longest else "00:00:00"
+                sample = sample_segments.get(speaker)
+                start_short = format_time_short(sample["start"]) if sample else "00:00:00"
+                end_short = format_time_short(sample["end"]) if sample else "00:00:00"
                 pitch_str = f"{pitch_hz:.0f}Hz" if pitch_hz is not None else "N/A"
                 f.write(f"{label}|{gender.capitalize()}|{start_short}|{end_short}|{pitch_str}\n")
             f.write("\n")

@@ -17,6 +17,7 @@ public sealed class PipelineOrchestrator : IPipelineOrchestrator
     private readonly IMediaSeparatorService _mediaSeparator;
     private readonly IVttExtractorService _vttExtractor;
     private readonly IVoiceRemoverService _voiceRemover;
+    private readonly ISpeakerSampleExtractorService _speakerSampleExtractor;
     private readonly IVttTranslatorService _vttTranslator;
     private readonly IVttToAzureTtsService _azureTts;
     private readonly IAudioMixerService _audioMixer;
@@ -30,6 +31,7 @@ public sealed class PipelineOrchestrator : IPipelineOrchestrator
         IMediaSeparatorService mediaSeparator,
         IVttExtractorService vttExtractor,
         IVoiceRemoverService voiceRemover,
+        ISpeakerSampleExtractorService speakerSampleExtractor,
         IVttTranslatorService vttTranslator,
         IVttToAzureTtsService azureTts,
         IAudioMixerService audioMixer,
@@ -42,6 +44,7 @@ public sealed class PipelineOrchestrator : IPipelineOrchestrator
         _mediaSeparator = mediaSeparator;
         _vttExtractor   = vttExtractor;
         _voiceRemover   = voiceRemover;
+        _speakerSampleExtractor = speakerSampleExtractor;
         _vttTranslator  = vttTranslator;
         _azureTts       = azureTts;
         _audioMixer     = audioMixer;
@@ -95,12 +98,13 @@ public sealed class PipelineOrchestrator : IPipelineOrchestrator
         [JobState.SeparatingMedia]      = JobState.Queued,
         [JobState.ExtractingVtt]        = JobState.AudioExtracted,
         [JobState.RemovingVoice]        = JobState.VttExtracted,
-        // Multi-language loop — any crash inside resets to VoiceRemoved
-        [JobState.TranslatingVtt]       = JobState.VoiceRemoved,
-        [JobState.VttTranslated]        = JobState.VoiceRemoved,
-        [JobState.SynthesisingAzureTts] = JobState.VoiceRemoved,
-        [JobState.AzureTtsSynthesised]  = JobState.VoiceRemoved,
-        [JobState.MixingAudio]          = JobState.VoiceRemoved,
+        [JobState.ExtractingSpeakerSamples] = JobState.VoiceRemoved,
+        // Multi-language loop — any crash inside resets to SpeakerSamplesExtracted
+        [JobState.TranslatingVtt]       = JobState.SpeakerSamplesExtracted,
+        [JobState.VttTranslated]        = JobState.SpeakerSamplesExtracted,
+        [JobState.SynthesisingAzureTts] = JobState.SpeakerSamplesExtracted,
+        [JobState.AzureTtsSynthesised]  = JobState.SpeakerSamplesExtracted,
+        [JobState.MixingAudio]          = JobState.SpeakerSamplesExtracted,
         [JobState.AddingToVideo]        = JobState.MixedNoVoiceWithSyntheticVoice,
     };
 
@@ -188,6 +192,12 @@ public sealed class PipelineOrchestrator : IPipelineOrchestrator
                 break;
 
             case JobState.VoiceRemoved:
+                await _jobService.TransitionStateAsync(job.Id, JobState.ExtractingSpeakerSamples, ct: ct);
+                var extractingSamples = (await _jobService.GetJobAsync(job.Id, ct))!;
+                await _speakerSampleExtractor.ExtractAsync(extractingSamples, options.FfmpegPath, ct);
+                break;
+
+            case JobState.SpeakerSamplesExtracted:
                 // Mark start of the multi-language loop.
                 await _jobService.TransitionStateAsync(job.Id, JobState.TranslatingVtt, ct: ct);
                 var working = (await _jobService.GetJobAsync(job.Id, ct))!;

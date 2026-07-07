@@ -25,6 +25,10 @@ public enum JobState
     RemovingVoice,
     VoiceRemoved,
 
+    // ── Step 5b : per-speaker sample extraction (from isolated vocals track) ─
+    ExtractingSpeakerSamples,
+    SpeakerSamplesExtracted,
+
     // ── Step 6 (legacy, unused) ──────────────────────────────────────────────
     SynthesisingVoice,
     VoiceSynthesised,

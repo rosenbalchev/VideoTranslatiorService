@@ -23,6 +23,14 @@ public class VideoJob
     // Step 4 — voice removal
     public string? VoiceRemovedAudioPath { get; set; }
 
+    // Step 4 — voice removal: isolated vocals track (voice only, no background), also
+    // produced by Demucs alongside VoiceRemovedAudioPath. Source for speaker samples.
+    public string? VocalsAudioPath { get; set; }
+
+    // Step 4b — per-speaker voice samples extracted from VocalsAudioPath.
+    // JSON object: { "Speaker1": "<path>", "Speaker2": "<path>", ... }
+    public string? SpeakerSamplePathsJson { get; set; }
+
     // Step 4 — VTT translation
     public string? TranslatedVttFilePath { get; set; }
 

@@ -44,6 +44,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IVttTranslatorService, VttTranslatorService>();
         services.AddScoped<IVttToAzureTtsService, VttToAzureTtsService>();
         services.AddScoped<IVoiceRemoverService, VoiceRemoverService>();
+        services.AddScoped<ISpeakerSampleExtractorService, SpeakerSampleExtractorService>();
         services.AddScoped<IAudioMixerService, AudioMixerService>();
         services.AddScoped<IVideoMuxerService, VideoMuxerService>();
         services.AddScoped<IPipelineOrchestrator, PipelineOrchestrator>();

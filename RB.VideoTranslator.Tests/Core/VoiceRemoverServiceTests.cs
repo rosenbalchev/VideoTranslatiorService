@@ -66,6 +66,17 @@ public sealed class VoiceRemoverServiceTests
     }
 
     [Fact]
+    public async Task RemoveAsync_SetsVocalsAudioPath()
+    {
+        var job = MakeJob();
+
+        await _sut.RemoveAsync(job);
+
+        var expected = Path.Combine("/proc", "demucs", "htdemucs", "video_audio", "vocals.flac");
+        Assert.Equal(expected, job.VocalsAudioPath);
+    }
+
+    [Fact]
     public async Task RemoveAsync_TransitionsStateToVoiceRemoved()
     {
         var job = MakeJob();
