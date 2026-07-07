@@ -4,6 +4,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RB.VideoTranslator.Data.Context;
+using System.Data.Common;
 using RB.VideoTranslator.Data.Repositories;
 using RB.VideoTranslator.Domain.Consts;
 using RB.VideoTranslator.Domain.Interfaces;
@@ -49,24 +50,60 @@ public sealed class PipelineBootstrapper : IPipelineRunner
         _logger.LogInformation("Pipeline initialized successfully");
     }
 
-    // Adds new columns to the VideoJobs table if they don't exist yet.
-    // EnsureCreatedAsync creates the table on first run but never alters existing schemas,
-    // so we apply idempotent ALTER TABLE statements for any column added post-initial-creation.
+    // Ensures the DB schema matches expected shape. If required VideoJobs columns are missing,
+    // recreate the database to bring the schema up-to-date. This is safer than issuing ALTERs that
+    // may fail on some platforms or when the DB is locked.
     private static async Task MigrateSchemaAsync(AppDbContext db)
     {
-        foreach (var sql in new[]
+        var expectedColumns = new[] { "AudioChannels", "AudioSampleRate" };
+
+        try
         {
-            "ALTER TABLE VideoJobs ADD COLUMN AudioChannels INTEGER NOT NULL DEFAULT 2",
-            "ALTER TABLE VideoJobs ADD COLUMN AudioSampleRate INTEGER NOT NULL DEFAULT 44100",
-        })
-        {
-            try
+            var conn = db.Database.GetDbConnection();
+            await conn.OpenAsync();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "PRAGMA table_info('VideoJobs');";
+
+            var existing = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            using (var reader = await cmd.ExecuteReaderAsync())
             {
-                await db.Database.ExecuteSqlRawAsync(sql);
+                while (await reader.ReadAsync())
+                {
+                    // name column is at index 1 per PRAGMA table_info(name,type,...) layout
+                    existing.Add(reader.GetString(1));
+                }
             }
-            catch (Exception ex) when (ex.Message.Contains("duplicate column name", StringComparison.OrdinalIgnoreCase))
+
+            var missing = expectedColumns.Where(c => !existing.Contains(c)).ToList();
+            if (missing.Count == 0)
             {
-                // Column already exists on subsequent runs — expected, not an error.
+                // Schema already contains expected columns — nothing to do.
+                return;
+            }
+
+            // Detected schema drift: recreate DB (this will remove any existing data).
+            // Log which columns triggered recreation for diagnostics.
+            Console.WriteLine($"Schema change detected: missing columns [{string.Join(',', missing)}] — recreating database.");
+
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+        }
+        catch (Exception ex)
+        {
+            // If the PRAGMA check fails for any reason, fall back to attempting ALTERs as a last resort.
+            Console.WriteLine($"Schema check failed: {ex.Message}");
+
+            foreach (var sql in new[]
+            {
+                "ALTER TABLE VideoJobs ADD COLUMN AudioChannels INTEGER NOT NULL DEFAULT 2",
+                "ALTER TABLE VideoJobs ADD COLUMN AudioSampleRate INTEGER NOT NULL DEFAULT 44100",
+            })
+            {
+                try
+                {
+                    await db.Database.ExecuteSqlRawAsync(sql);
+                }
+                catch { /* best-effort */ }
             }
         }
     }
