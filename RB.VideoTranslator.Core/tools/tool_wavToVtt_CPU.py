@@ -33,6 +33,27 @@ def format_time(seconds: float) -> str:
     return f"{hours:02}:{minutes:02}:{seconds:02}.{milliseconds:03}"
 
 
+def format_time_short(seconds: float) -> str:
+    seconds = int(seconds)
+    minutes, seconds = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours:02}:{minutes:02}:{seconds:02}"
+
+
+def find_longest_segment_per_speaker(segments: list) -> dict:
+    """For each speaker, the segment with the longest speaking duration (end - start)."""
+    longest: dict[str, dict] = {}
+    for segment in segments:
+        speaker = segment.get("speaker")
+        if speaker is None:
+            continue
+        duration = segment["end"] - segment["start"]
+        current = longest.get(speaker)
+        if current is None or duration > current["duration"]:
+            longest[speaker] = {"duration": duration, "start": segment["start"], "end": segment["end"]}
+    return longest
+
+
 def estimate_speaker_genders(audio: np.ndarray, segments: list) -> dict:
     """Median-F0 heuristic per speaker: low pitch -> male, high pitch -> female."""
     segments_by_speaker: dict[str, list] = {}
@@ -119,8 +140,24 @@ def transcribe_to_vtt(
             if speaker is not None and speaker not in speaker_labels:
                 speaker_labels[speaker] = f"Speaker{len(speaker_labels) + 1}"
 
+    longest_segments = find_longest_segment_per_speaker(segments) if diarize else {}
+
     with output_file.open("w", encoding="utf-8") as f:
         f.write("WEBVTT\n\n")
+
+        if diarize and speaker_labels:
+            noun = "speaker" if len(speaker_labels) == 1 else "speakers"
+            f.write("NOTE\n")
+            f.write(f"The conversation contains {len(speaker_labels)} {noun}.\n")
+            for speaker, label in speaker_labels.items():
+                gender, pitch_hz = speaker_genders.get(speaker, ("unknown", None))
+                longest = longest_segments.get(speaker)
+                start_short = format_time_short(longest["start"]) if longest else "00:00:00"
+                end_short = format_time_short(longest["end"]) if longest else "00:00:00"
+                pitch_str = f"{pitch_hz:.0f}Hz" if pitch_hz is not None else "N/A"
+                f.write(f"{label}|{gender.capitalize()}|{start_short}|{end_short}|{pitch_str}\n")
+            f.write("\n")
+
         for index, segment in enumerate(segments, start=1):
             start = format_time(segment["start"])
             end = format_time(segment["end"])

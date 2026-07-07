@@ -315,4 +315,83 @@ public sealed class VttTranslatorServiceTests
         Assert.Single(blocks);
         Assert.Equal("Hello world", blocks[0].Text);
     }
+
+    // ── Speaker/gender summary NOTE block ─────────────────────────────────────
+
+    private const string SampleVttWithSpeakerSummary = """
+        WEBVTT
+
+        NOTE
+        The conversation contains 2 speakers.
+        Speaker1|Female|00:00:01|00:00:03|210Hz
+        Speaker2|Male|00:00:05|00:00:07|110Hz
+
+        1
+        00:00:01.000 --> 00:00:03.000
+        Hello world
+
+        2
+        00:00:05.000 --> 00:00:07.000
+        Goodbye world
+        """;
+
+    [Fact]
+    public void ExtractLeadingNote_ReturnsSummaryBlockVerbatim()
+    {
+        var note = VttTranslatorService.ExtractLeadingNote(SampleVttWithSpeakerSummary);
+
+        Assert.NotNull(note);
+        Assert.StartsWith("NOTE", note);
+        Assert.Contains("Speaker1|Female|00:00:01|00:00:03|210Hz", note);
+        Assert.Contains("Speaker2|Male|00:00:05|00:00:07|110Hz", note);
+    }
+
+    [Fact]
+    public void ExtractLeadingNote_ReturnsNullWhenNoSummaryPresent()
+    {
+        Assert.Null(VttTranslatorService.ExtractLeadingNote(SampleVtt));
+    }
+
+    [Fact]
+    public void ParseBlocks_DoesNotTreatSummaryNoteAsACue()
+    {
+        var blocks = VttTranslatorService.ParseBlocks(SampleVttWithSpeakerSummary);
+
+        Assert.Equal(2, blocks.Count);
+        Assert.DoesNotContain(blocks, b => b.Text.Contains("speakers"));
+    }
+
+    [Fact]
+    public async Task TranslateAsync_PreservesSpeakerSummaryNoteUntranslatedInOutput()
+    {
+        _fs.ReadAllTextAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(SampleVttWithSpeakerSummary));
+
+        string? capturedUser = null;
+        _chat.CompleteChatAsync(
+                Arg.Any<string>(),
+                Arg.Do<string>(u => capturedUser = u),
+                Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(TranslatedResponse));
+
+        string? capturedOutput = null;
+        _fs.WriteAllTextAsync(
+                Arg.Any<string>(),
+                Arg.Do<string>(s => capturedOutput = s),
+                Arg.Any<CancellationToken>())
+            .Returns(Task.CompletedTask);
+
+        await _sut.TranslateAsync(MakeJob(), "Bulgarian");
+
+        // Never sent to GPT.
+        Assert.NotNull(capturedUser);
+        Assert.DoesNotContain("speakers", capturedUser);
+        Assert.DoesNotContain("Speaker1", capturedUser);
+
+        // Preserved verbatim, untranslated, in the output file.
+        Assert.NotNull(capturedOutput);
+        Assert.Contains("NOTE\nThe conversation contains 2 speakers.", capturedOutput);
+        Assert.Contains("Speaker1|Female|00:00:01|00:00:03|210Hz", capturedOutput);
+        Assert.Contains("Speaker2|Male|00:00:05|00:00:07|110Hz", capturedOutput);
+    }
 }

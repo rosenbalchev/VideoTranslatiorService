@@ -39,6 +39,10 @@ public sealed class VttTranslatorService : IVttTranslatorService
 
         var content = await _fs.ReadAllTextAsync(job.VttFilePath, ct);
 
+        // The speaker/gender summary NOTE block (if present) is metadata, not dialogue —
+        // never send it to GPT, but keep it verbatim in the translated output.
+        var leadingNote = ExtractLeadingNote(content);
+
         // Parse into structured blocks so timestamps are never sent to the model.
         var blocks = ParseBlocks(content);
 
@@ -86,6 +90,11 @@ public sealed class VttTranslatorService : IVttTranslatorService
         var sb = new StringBuilder(blocks.Count * 80 + 8);
         sb.AppendLine("WEBVTT");
         sb.AppendLine();
+        if (leadingNote is not null)
+        {
+            sb.AppendLine(leadingNote);
+            sb.AppendLine();
+        }
         for (int i = 0; i < blocks.Count; i++)
         {
             sb.AppendLine((i + 1).ToString());
@@ -106,6 +115,25 @@ public sealed class VttTranslatorService : IVttTranslatorService
         await _repo.UpdateAsync(job, ct);
 
         _logger.LogInformation("Translated VTT written to {Path}", outputPath);
+    }
+
+    // Returns the raw text of the speaker/gender summary NOTE block that
+    // tool_wavToVtt_*.py writes immediately after the WEBVTT header, if present.
+    // Only the block in that specific position is treated as the summary — later NOTE
+    // blocks (the per-cue speaker labels) are intentionally left out of this check and
+    // remain dropped from the translated output, unchanged from prior behaviour.
+    internal static string? ExtractLeadingNote(string content)
+    {
+        var rawBlocks = content
+            .Replace("\r\n", "\n")
+            .Split(["\n\n"], StringSplitOptions.RemoveEmptyEntries);
+
+        if (rawBlocks.Length < 2) return null;
+
+        var candidate = rawBlocks[1].Trim();
+        return candidate.StartsWith("NOTE", StringComparison.Ordinal) && !candidate.Contains("-->")
+            ? candidate
+            : null;
     }
 
     // Parses raw VTT content into structured blocks preserving the original timestamp line.
