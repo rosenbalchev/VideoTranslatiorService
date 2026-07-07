@@ -26,9 +26,9 @@ public sealed class VttTranslatorService : IVttTranslatorService
         IAzureChatEngine chat,
         ILogger<VttTranslatorService> logger)
     {
-        _repo   = repo;
-        _fs     = fs;
-        _chat   = chat;
+        _repo = repo;
+        _fs = fs;
+        _chat = chat;
         _logger = logger;
     }
 
@@ -62,7 +62,7 @@ public sealed class VttTranslatorService : IVttTranslatorService
             ct.ThrowIfCancellationRequested();
 
             var chunkCount = Math.Min(ChunkSize, blocks.Count - i);
-            var lines      = new string[chunkCount];
+            var lines = new string[chunkCount];
             for (int j = 0; j < chunkCount; j++)
                 lines[j] = $"[{i + j + 1}] {blocks[i + j].Text}";
 
@@ -94,7 +94,7 @@ public sealed class VttTranslatorService : IVttTranslatorService
             sb.AppendLine();
         }
 
-        var baseName   = Path.GetFileNameWithoutExtension(job.OriginalFileName);
+        var baseName = Path.GetFileNameWithoutExtension(job.OriginalFileName);
         var outputPath = Path.Combine(
             job.ProcessingFolderPath,
             $"{baseName}_translated_{targetLanguage}.vtt");
