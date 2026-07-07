@@ -1,5 +1,5 @@
 using Microsoft.EntityFrameworkCore;
-using RB.VideoTranslator.Data.Entities;
+using RB.VideoTranslator.Domain.Dbo;
 
 namespace RB.VideoTranslator.Data.Context;
 

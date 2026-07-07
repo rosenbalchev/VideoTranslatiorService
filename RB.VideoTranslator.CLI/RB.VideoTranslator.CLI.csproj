@@ -17,7 +17,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\RB.VideoTranslator.BLL\RB.VideoTranslator.BLL.csproj" />
+    <ProjectReference Include="..\RB.VideoTranslator.Core\RB.VideoTranslator.Core.csproj" />
+    <ProjectReference Include="..\RB.VideoTranslator.Domain\RB.VideoTranslator.Domain.csproj" />
   </ItemGroup>
 
   <ItemGroup>

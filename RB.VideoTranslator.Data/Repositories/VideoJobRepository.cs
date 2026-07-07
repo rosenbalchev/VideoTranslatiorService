@@ -1,6 +1,8 @@
 using Microsoft.EntityFrameworkCore;
 using RB.VideoTranslator.Data.Context;
-using RB.VideoTranslator.Data.Entities;
+using RB.VideoTranslator.Domain.Dbo;
+using RB.VideoTranslator.Domain.Enums;
+using RB.VideoTranslator.Domain.Interfaces;
 
 namespace RB.VideoTranslator.Data.Repositories;
 
@@ -34,16 +36,16 @@ public sealed class VideoJobRepository : IVideoJobRepository
             // stable — ready for the next step
             JobState.Queued,
             JobState.AudioExtracted,
-            JobState.SrtExtracted,
+            JobState.VttExtracted,
             JobState.VoiceRemoved,
             JobState.MixedNoVoiceWithSyntheticVoice,
             // in-progress (orchestrator resets these to their stable predecessor and retries)
             JobState.SeparatingMedia,
-            JobState.ExtractingSrt,
+            JobState.ExtractingVtt,
             JobState.RemovingVoice,
             // Inside the multi-language loop — all reset to VoiceRemoved
-            JobState.TranslatingSrt,
-            JobState.SrtTranslated,
+            JobState.TranslatingVtt,
+            JobState.VttTranslated,
             JobState.SynthesisingAzureTts,
             JobState.AzureTtsSynthesised,
             JobState.MixingAudio,

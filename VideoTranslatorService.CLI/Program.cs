@@ -6,6 +6,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using VideoTranslatorService.Data.Context;
 using VideoTranslatorService.Data.Repositories;
+using Azure;
 
 namespace VideoTranslatorService.CLI;
 

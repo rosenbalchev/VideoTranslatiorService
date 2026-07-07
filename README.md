@@ -1,6 +1,6 @@
 # RB.VideoTranslator
 
-A .NET 10 CLI tool and reusable BLL library that ingests video files and runs them through a fully automated dubbing pipeline: subtitle extraction → GPT-4o-mini translation → Azure Neural TTS synthesis → Demucs voice removal → audio mix → final video mux with embedded subtitles and multiple audio tracks.
+A .NET 10 CLI tool and reusable Core library that ingests video files and runs them through a fully automated dubbing pipeline: subtitle extraction → GPT-4o-mini translation → Azure Neural TTS synthesis → Demucs voice removal → audio mix → final video mux with embedded subtitles and multiple audio tracks.
 
 ---
 
@@ -20,15 +20,16 @@ See **[how-to-start.md](how-to-start.md)** for the full step-by-step guide inclu
 
 ```
 RB.VideoTranslator.slnx
-├── RB.VideoTranslator.Data/    ← EF Core entities, DbContext, repositories
-├── RB.VideoTranslator.BLL/     ← Business logic, pipeline services, DI extension (NuGet packable)
+├── RB.VideoTranslator.Domain/  ← Enums, consts, interfaces, DB entities (DBOs), public models (NuGet packable)
+├── RB.VideoTranslator.Data/    ← EF Core DbContext, repository implementations
+├── RB.VideoTranslator.Core/    ← Business logic, pipeline services, DI extension (NuGet packable)
 ├── RB.VideoTranslator.CLI/     ← Console entry-point, CLI options, appsettings.json support
-└── RB.VideoTranslator.Tests/   ← xUnit unit tests (BLL + Data layers)
+└── RB.VideoTranslator.Tests/   ← xUnit unit tests (Core + Data layers)
 ```
 
 ### NuGet package
 
-`RB.VideoTranslator.BLL` is published as a NuGet package for use in other hosts (e.g. a background service or web API):
+`RB.VideoTranslator.Core` (with its `RB.VideoTranslator.Domain` dependency) is published as a NuGet package for use in other hosts (e.g. a background service or web API):
 
 ```csharp
 services.AddRBVideoTranslator(configuration, o =>
@@ -40,7 +41,8 @@ services.AddRBVideoTranslator(configuration, o =>
 
 Pack locally:
 ```bat
-dotnet pack RB.VideoTranslator.BLL\RB.VideoTranslator.BLL.csproj --output nupkg
+dotnet pack RB.VideoTranslator.Domain\RB.VideoTranslator.Domain.csproj --output nupkg
+dotnet pack RB.VideoTranslator.Core\RB.VideoTranslator.Core.csproj --output nupkg
 ```
 
 ---
@@ -128,15 +130,15 @@ WorkingFolderPath\input
 [SeparatingMedia]       ffmpeg — extract audio WAV + produce silent MP4
     │
     ▼
-[ExtractingSrt]         Whisper — transcribe audio → SRT subtitle file
+[ExtractingVtt]         Whisper — transcribe audio → WebVTT subtitle file
     │
     ▼
 [RemovingVoice]         Demucs htdemucs — separate vocals from music bed → no_vocals.flac
     │
     ▼  ┌─────────────────── repeated for each target language ───────────────────┐
-[TranslatingSrt]        GPT-4o-mini — translate SRT (50 entries/call)            │
+[TranslatingVtt]        GPT-4o-mini — translate VTT (50 entries/call)            │
     │  │                                                                          │
-[SynthesisingAzureTts]  Azure Neural TTS — synthesise translated SRT → WAV       │
+[SynthesisingAzureTts]  Azure Neural TTS — synthesise translated VTT → WAV       │
                          • Per-entry synthesis, one API call per subtitle entry   │
                          • <prosody rate> adjusts speed to fit each window        │
                          • Absolute-timestamp leading silence keeps sync          │
@@ -146,7 +148,7 @@ WorkingFolderPath\input
     │  └───────────────────────────────────────────────────────────────────────── ┘
     ▼
 [AddingToVideo]         ffmpeg — mux silent MP4 + original + all language tracks
-                         + all translated SRTs as soft subtitles → OutputFolderPath
+                         + all translated VTTs as soft subtitles → OutputFolderPath
     │
     ▼
 Completed  ✓
@@ -156,32 +158,41 @@ Completed  ✓
 
 ## Services
 
+### Domain (`RB.VideoTranslator.Domain`)
+
+| Folder | Contents |
+|--------|----------|
+| `Enums` | `JobState` — full state machine from `Queued` to `Completed` / `Failed` |
+| `Consts` | `PipelineOptionsDefaults` — `appsettings.json` section name |
+| `Dbo` | `VideoJob` — root entity, tracks all file paths and current pipeline state |
+| `Models` | `PipelineOptions`, `LanguageResult` — externally visible pipeline configuration/results |
+| `Exceptions` | `StepNotImplementedException` |
+| `Interfaces` | All service contracts (`IJobService`, `IMediaSeparatorService`, `IVttExtractorService`, `IVoiceRemoverService`, `IVttTranslatorService`, `IVttToAzureTtsService`, `IAudioMixerService`, `IVideoMuxerService`, `IPipelineOrchestrator`, `IAzureSpeechEngine`, `IAzureChatEngine`, `IProcessRunner`, `IFileSystem`, `IVideoJobRepository`, `IPipelineRunner`) |
+
 ### Data layer (`RB.VideoTranslator.Data`)
 
 | Type | Purpose |
 |------|---------|
-| `VideoJob` | Root entity — tracks all file paths and current pipeline state |
-| `JobState` (enum) | Full state machine from `Queued` to `Completed` / `Failed` |
 | `AppDbContext` | EF Core SQLite context |
-| `IVideoJobRepository` / `VideoJobRepository` | CRUD + resumable-job query |
+| `VideoJobRepository` | Implements `IVideoJobRepository` — CRUD + resumable-job query |
 
-### BLL (`RB.VideoTranslator.BLL`)
+### Core (`RB.VideoTranslator.Core`)
 
 | Service | Purpose |
 |---------|---------|
-| `IJobService` / `JobService` | Move file to processing folder, create job record, transition states |
-| `IMediaSeparatorService` / `MediaSeparatorService` | ffmpeg — extract audio + produce silent video |
-| `ISrtExtractorService` / `SrtExtractorService` | Whisper — transcribe audio to SRT |
-| `IVoiceRemoverService` / `VoiceRemoverService` | Demucs — separate vocals from music bed |
-| `ISrtTranslatorService` / `SrtTranslatorService` | GPT-4o-mini — translate SRT to target language |
-| `ISrtToAzureTtsService` / `SrtToAzureTtsService` | Azure TTS — synthesise WAV from translated SRT |
-| `IAudioMixerService` / `AudioMixerService` | ffmpeg amix — blend no_vocals + TTS audio |
-| `IVideoMuxerService` / `VideoMuxerService` | ffmpeg — mux video + all audio tracks + embedded subtitles |
-| `IPipelineOrchestrator` / `PipelineOrchestrator` | Drives the state machine; resets interrupted jobs on restart |
-| `IAzureSpeechEngine` / `AzureSpeechEngine` | Azure Speech SDK wrapper (injectable for testing) |
-| `IAzureChatEngine` / `AzureChatEngine` | Azure OpenAI `ChatClient` wrapper (injectable for testing) |
-| `IProcessRunner` / `DefaultProcessRunner` | `System.Diagnostics.Process` abstraction |
-| `IFileSystem` / `PhysicalFileSystem` | File I/O abstraction |
+| `JobService` | Move file to processing folder, create job record, transition states |
+| `MediaSeparatorService` | ffmpeg — extract audio + produce silent video |
+| `VttExtractorService` | Whisper — transcribe audio to VTT |
+| `VoiceRemoverService` | Demucs — separate vocals from music bed |
+| `VttTranslatorService` | GPT-4o-mini — translate VTT to target language |
+| `VttToAzureTtsService` | Azure TTS — synthesise WAV from translated VTT |
+| `AudioMixerService` | ffmpeg amix — blend no_vocals + TTS audio |
+| `VideoMuxerService` | ffmpeg — mux video + all audio tracks + embedded subtitles |
+| `PipelineOrchestrator` | Drives the state machine; resets interrupted jobs on restart |
+| `AzureSpeechEngine` | Azure Speech SDK wrapper (injectable for testing) |
+| `AzureChatEngine` | Azure OpenAI `ChatClient` wrapper (injectable for testing) |
+| `DefaultProcessRunner` | `System.Diagnostics.Process` abstraction |
+| `PhysicalFileSystem` | File I/O abstraction |
 
 ---
 
@@ -224,14 +235,14 @@ dotnet test RB.VideoTranslator.slnx --verbosity normal
 
 | Area | File | What is tested |
 |------|------|----------------|
-| `JobService` | `BLL/JobServiceTests.cs` | File move, job creation, state transitions, error paths |
-| `MediaSeparatorService` | `BLL/MediaSeparatorServiceTests.cs` | Path building, ffmpeg args, state update, missing-output error |
-| `SrtExtractorService` | `BLL/SrtExtractorServiceTests.cs` | Whisper invocation, output path, state transition |
-| `SrtTranslatorService` | `BLL/SrtTranslatorServiceTests.cs` | GPT chunking (50/call), system prompt contains target language, output path, state transition |
-| `SrtToAzureTtsService` | `BLL/SrtToAzureTtsServiceTests.cs` | Per-entry SSML, `<prosody rate>` logic, silence padding, WAV concatenation, retry on failure, silence fallback |
-| `VoiceRemoverService` | `BLL/VoiceRemoverServiceTests.cs` | Demucs args, output path detection, state transition |
-| `AudioMixerService` | `BLL/AudioMixerServiceTests.cs` | ffmpeg amix args, language-specific output path, state transition, missing-output error |
-| `VideoMuxerService` | `BLL/VideoMuxerServiceTests.cs` | Multi-stream ffmpeg args, apad filter, Original/language metadata, subtitle codec (MP4/MKV), output folder |
+| `JobService` | `Core/JobServiceTests.cs` | File move, job creation, state transitions, error paths |
+| `MediaSeparatorService` | `Core/MediaSeparatorServiceTests.cs` | Path building, ffmpeg args, state update, missing-output error |
+| `VttExtractorService` | `Core/VttExtractorServiceTests.cs` | Whisper invocation, output path, state transition |
+| `VttTranslatorService` | `Core/VttTranslatorServiceTests.cs` | GPT chunking (50/call), system prompt contains target language, output path, state transition |
+| `VttToAzureTtsService` | `Core/VttToAzureTtsServiceTests.cs` | Per-entry SSML, `<prosody rate>` logic, silence padding, WAV concatenation, retry on failure, silence fallback |
+| `VoiceRemoverService` | `Core/VoiceRemoverServiceTests.cs` | Demucs args, output path detection, state transition |
+| `AudioMixerService` | `Core/AudioMixerServiceTests.cs` | ffmpeg amix args, language-specific output path, state transition, missing-output error |
+| `VideoMuxerService` | `Core/VideoMuxerServiceTests.cs` | Multi-stream ffmpeg args, apad filter, Original/language metadata, subtitle codec (MP4/MKV), output folder |
 | `VideoJobRepository` | `Data/VideoJobRepositoryTests.cs` | CRUD, state filtering, `UpdatedAt` timestamp |
 
 ---
@@ -247,12 +258,12 @@ VideoJobs
   ProcessingVideoPath   TEXT   after SeparatingMedia
   ExtractedAudioPath    TEXT   after SeparatingMedia
   SilentVideoPath       TEXT   after SeparatingMedia
-  SrtFilePath           TEXT   after ExtractingSrt
+  VttFilePath           TEXT   after ExtractingVtt
   VoiceRemovedAudioPath TEXT   after RemovingVoice
-  TranslatedSrtFilePath TEXT   after TranslatingSrt  (last language processed)
+  TranslatedVttFilePath TEXT   after TranslatingVtt  (last language processed)
   AzureTtsAudioPath     TEXT   after SynthesisingAzureTts  (last language processed)
   MixedAudioPath        TEXT   after MixingAudio  (last language processed)
-  LanguageResultsJson   TEXT   JSON array of {Language, MixedAudioPath, TranslatedSrtFilePath}
+  LanguageResultsJson   TEXT   JSON array of {Language, MixedAudioPath, TranslatedVttFilePath}
   OutputFilePath        TEXT   after AddingToVideo
   State                 TEXT   enum stored as string
   ErrorMessage          TEXT

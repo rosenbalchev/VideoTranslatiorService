@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!-- NuGet packaging -->
+    <IsPackable>true</IsPackable>
+    <PackageId>RB.VideoTranslator.Domain</PackageId>
+    <Version>1.0.0</Version>
+    <Authors>Rosen Balchev</Authors>
+    <Description>Domain layer for the RB.VideoTranslator AI video translation pipeline. Contains enums, constants, interfaces, database entities, and public models shared across the pipeline assemblies.</Description>
+    <PackageTags>video;translation;azure;tts;openai;pipeline;domain</PackageTags>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <RepositoryType>git</RepositoryType>
+  </PropertyGroup>
+
+</Project>

@@ -1,8 +1,9 @@
 using Microsoft.EntityFrameworkCore;
 using Xunit;
 using RB.VideoTranslator.Data.Context;
-using RB.VideoTranslator.Data.Entities;
 using RB.VideoTranslator.Data.Repositories;
+using RB.VideoTranslator.Domain.Dbo;
+using RB.VideoTranslator.Domain.Enums;
 
 namespace RB.VideoTranslator.Tests.Data;
 

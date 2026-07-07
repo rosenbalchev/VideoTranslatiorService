@@ -1,6 +1,8 @@
 using System.CommandLine;
 using System.CommandLine.Parsing;
-using RB.VideoTranslator.BLL;
+using RB.VideoTranslator.Core;
+using RB.VideoTranslator.Domain.Interfaces;
+using RB.VideoTranslator.Domain.Models;
 
 namespace RB.VideoTranslator.CLI;
 
@@ -88,7 +90,7 @@ internal sealed class Program
         {
             try
             {
-                // Create pipeline runner from BLL
+                // Create pipeline runner from Core
                 IPipelineRunner runner = new PipelineBootstrapper();
 
                 // Initialize pipeline with merged CLI options
