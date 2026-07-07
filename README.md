@@ -59,6 +59,7 @@ dotnet pack RB.VideoTranslator.Core\RB.VideoTranslator.Core.csproj --output nupk
     "FfmpegPath": "ffmpeg",
     "PythonPath": "python",
     "DemucsPath": "python",
+    "HfToken": "",
     "AzureSubscriptionKey": "<your-key>",
     "AzureEndpointUrl": "https://<resource>.cognitiveservices.azure.com/",
     "AzureOpenAiEndpoint": "https://<resource>.services.ai.azure.com/",
@@ -74,6 +75,7 @@ dotnet pack RB.VideoTranslator.Core\RB.VideoTranslator.Core.csproj --output nupk
 |-------|----------|-------|
 | `WorkingFolderPath` | **yes** | Root folder; `input`, `processing`, `output` subfolders are created automatically. The CLI always runs with this as its working directory. |
 | `VenvPath` | auto | Filled in automatically by the install script (`<WorkingFolderPath>\rb.video.translator`). Leave empty before first run. |
+| `HfToken` | | HuggingFace token for speaker diarization + gender-estimate comments in the VTT. See [HuggingFace token setup](how-to-start.md#huggingface-speaker-diarization). Leave empty to skip diarization (plain transcription still works). |
 | `AzureSubscriptionKey` | **yes** | Azure Cognitive Services key — used for both Speech TTS and OpenAI. |
 | `AzureEndpointUrl` | **yes** | Azure Speech endpoint URL. |
 | `AzureOpenAiEndpoint` | **yes** | Azure AI Services root URL (no `/openai/v1` suffix). |
@@ -98,8 +100,9 @@ The script will:
 2. Create the `input`, `processing`, `output` subfolders
 3. Install ffmpeg via winget
 4. Create a Python 3.12 virtual environment at `<WorkingFolderPath>\rb.video.translator`
-5. Install PyTorch, Demucs, faster-whisper (and CUDA runtime libs if CUDA)
-6. Write `VenvPath` back into `appsettings.json` automatically
+5. Install PyTorch, Demucs, WhisperX + librosa (and CUDA runtime libs if CUDA)
+6. Cache the `HfToken` login for speaker diarization, if set
+7. Write `VenvPath` back into `appsettings.json` automatically
 
 After this step `appsettings.json` will have `VenvPath` filled and no further CLI flags are needed.
 
@@ -130,7 +133,9 @@ WorkingFolderPath\input
 [SeparatingMedia]       ffmpeg — extract audio WAV + produce silent MP4
     │
     ▼
-[ExtractingVtt]         Whisper — transcribe audio → WebVTT subtitle file
+[ExtractingVtt]         WhisperX — transcribe audio → WebVTT subtitle file
+                         • Speaker diarization + pitch-based gender estimate,
+                           written as `NOTE` comments above each cue (needs `HfToken`)
     │
     ▼
 [RemovingVoice]         Demucs htdemucs — separate vocals from music bed → no_vocals.flac
@@ -182,7 +187,7 @@ Completed  ✓
 |---------|---------|
 | `JobService` | Move file to processing folder, create job record, transition states |
 | `MediaSeparatorService` | ffmpeg — extract audio + produce silent video |
-| `VttExtractorService` | Whisper — transcribe audio to VTT |
+| `VttExtractorService` | WhisperX — transcribe audio to VTT, with speaker diarization + gender-estimate `NOTE` comments |
 | `VoiceRemoverService` | Demucs — separate vocals from music bed |
 | `VttTranslatorService` | GPT-4o-mini — translate VTT to target language |
 | `VttToAzureTtsService` | Azure TTS — synthesise WAV from translated VTT |
@@ -210,6 +215,7 @@ Every option can come from `appsettings.json` (preferred) or be overridden on th
 | `--ffmpeg` | `FfmpegPath` | `ffmpeg` | ffmpeg executable |
 | `--python` | `PythonPath` | `python` | Python executable (Whisper) |
 | `--demucs` | `DemucsPath` | `python` | Python executable (Demucs) |
+| *(none)* | `HfToken` | *(empty)* | HuggingFace token for speaker diarization; install-time only, cached into the venv's HF login — see [setup guide](how-to-start.md#huggingface-speaker-diarization) |
 | `--openai-deployment` | `AzureOpenAiDeployment` | `gpt-4o-mini` | Azure OpenAI deployment name |
 | `--target-lang` | `TranslationTargetLanguages` | `Bulgarian` | Comma-separated target languages |
 | `--female` | `UseFemaleVoice` | `false` | Use female Azure TTS voice |

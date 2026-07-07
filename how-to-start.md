@@ -15,6 +15,7 @@ Open `RB.VideoTranslator.CLI\appsettings.json` (or the copy next to the exe afte
   "RBVideoTranslator": {
     "WorkingFolderPath": "C:\\VideoTranslator",
     "VenvPath": "",
+    "HfToken": "",
     "AzureSubscriptionKey": "<your-azure-key>",
     "AzureEndpointUrl": "https://<resource>.cognitiveservices.azure.com/",
     "AzureOpenAiEndpoint": "https://<resource>.services.ai.azure.com/",
@@ -55,7 +56,7 @@ The install scripts require Python 3.12 specifically (`py -3.12`).
 
 ---
 
-## Step 3 — Azure setup
+## Step 3 — Cloud & model access setup
 
 ### Speech TTS
 1. In the Azure Portal, create an **Azure AI Services** or **Cognitive Services — Speech** resource.
@@ -66,6 +67,18 @@ The install scripts require Python 3.12 specifically (`py -3.12`).
 1. Create an **Azure AI Services** resource with a **GPT-4o-mini** deployment.
 2. Copy the resource's root URL → `AzureOpenAiEndpoint` (no `/openai/v1` suffix).
 3. The same subscription key is used — no separate `az login` required.
+
+### HuggingFace (speaker diarization)
+
+The Whisper step also detects **who is speaking** and estimates each speaker's gender by pitch, writing them as `NOTE Speaker2 (estimated: female)` comments above each VTT cue. This uses gated pyannote models, so it needs a one-time HuggingFace token. Skip this if you don't need speaker labels — transcription still works without it.
+
+1. Create a free account at https://huggingface.co/join (or log in if you have one).
+2. Accept the model terms on both gated model pages (click **"Agree and access repository"** on each):
+   - https://huggingface.co/pyannote/speaker-diarization-3.1
+   - https://huggingface.co/pyannote/segmentation-3.0
+3. Go to https://huggingface.co/settings/tokens → **New token** → give it any name → role **Read** is enough → **Generate**.
+4. Copy the generated token (starts with `hf_...`) into `HfToken` in `appsettings.json`.
+5. Run (or re-run) the install script from Step 4 below — its last step calls `huggingface-cli login` with this token and caches it in the venv, so it is never needed again at runtime (no environment variable to set).
 
 ---
 
@@ -101,8 +114,9 @@ Both scripts will:
 2. Create the `input`, `processing`, `output` subfolders there
 3. Install ffmpeg via winget
 4. Create a Python 3.12 venv at `<WorkingFolderPath>\rb.video.translator`
-5. Install all Python packages
-6. Write `VenvPath` back into `appsettings.json` automatically
+5. Install all Python packages (PyTorch, Demucs, WhisperX, librosa)
+6. Cache the `HfToken` login for speaker diarization, if you set one in Step 3
+7. Write `VenvPath` back into `appsettings.json` automatically
 
 ---
 
@@ -110,7 +124,8 @@ Both scripts will:
 
 ```bat
 "C:\VideoTranslator\rb.video.translator\Scripts\activate"
-python -c "import faster_whisper; print('faster-whisper OK')"
+python -c "import whisperx; print('WhisperX OK')"
+python -c "import librosa; print('librosa OK')"
 python -c "import demucs; print('Demucs OK')"
 python -c "import torch; print('CUDA available:', torch.cuda.is_available())"
 ffmpeg -version
@@ -199,3 +214,4 @@ The orchestrator reads the last committed state from the SQLite database (`<Work
 | Azure TTS timeout errors | Transient SDK issue | Automatically retried up to 3 times; silence is substituted if all fail |
 | `No voice configured for language 'X'` | Language not in voice map | Add an entry to `PipelineOrchestrator.VoiceMap` |
 | Job stuck after restart | Unexpected state in DB | Check `ErrorMessage` column in `videotranslator.db` |
+| `Speaker diarization requires a HuggingFace token` | `HfToken` empty/not cached | Set `HfToken` in `appsettings.json` and re-run the install script, or pass `--no-diarize` for plain transcription |
