@@ -9,7 +9,7 @@ echo  This deletes the Python virtual environment and all packages
 echo  installed inside it. FFmpeg and system Python are NOT touched.
 echo.
 
-:: ── Read VenvPath (falling back to WorkingFolderPath) from appsettings.json ──
+:: -- Read VenvPath (falling back to WorkingFolderPath) from appsettings.json --
 set APPSETTINGS=%~dp0..\RB.VideoTranslator.CLI\appsettings.json
 if not exist "%APPSETTINGS%" (
     echo ERROR: appsettings.json not found at:
@@ -33,7 +33,7 @@ if "!VENV_PATH!"=="" (
         exit /b 1
     )
     set VENV_PATH=!WORK_FOLDER!\rb.video.translator
-    echo  VenvPath was empty — falling back to default: !VENV_PATH!
+    echo  VenvPath was empty - falling back to default: !VENV_PATH!
 )
 
 echo  Virtual env: !VENV_PATH!
@@ -68,7 +68,7 @@ if errorlevel 1 (
 echo  Clearing VenvPath in appsettings.json...
 powershell -NoProfile -Command ^
     "$f = '%APPSETTINGS%'; $j = Get-Content $f -Raw | ConvertFrom-Json; $j.RBVideoTranslator.VenvPath = ''; $j | ConvertTo-Json -Depth 10 | Set-Content $f -Encoding UTF8"
-if errorlevel 1 ( echo WARNING: Could not clear VenvPath in appsettings.json — clear it manually. )
+if errorlevel 1 ( echo WARNING: Could not clear VenvPath in appsettings.json - clear it manually. )
 
 echo  Done. Run install.bat to reinstall.
 
