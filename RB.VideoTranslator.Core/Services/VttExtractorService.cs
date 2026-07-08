@@ -24,12 +24,16 @@ public sealed class VttExtractorService : IVttExtractorService
         _logger = logger;
     }
 
-    public async Task ExtractAsync(VideoJob job, string pythonPath = "python", CancellationToken ct = default)
+    public async Task ExtractAsync(
+        VideoJob job,
+        string pythonPath = "python",
+        bool enableVoiceMarks = true,
+        CancellationToken ct = default)
     {
         if (string.IsNullOrEmpty(job.ExtractedAudioPath))
             throw new InvalidOperationException($"Job {job.Id} has no ExtractedAudioPath set.");
 
-        var scriptPath = Path.Combine(AppContext.BaseDirectory, "tools", "tool_wavToVtt_GPU.py");
+        var scriptPath = Path.Combine(AppContext.BaseDirectory, "tools", "tool_wavToVttVoiceMark.py");
         if (!File.Exists(scriptPath))
             throw new FileNotFoundException($"Whisper tool not found: {scriptPath}");
 
@@ -40,9 +44,10 @@ public sealed class VttExtractorService : IVttExtractorService
             "Transcribing {Audio} → {Vtt} (this may take a while)",
             job.ExtractedAudioPath, vttPath);
 
+        var voiceMarksArg = enableVoiceMarks ? string.Empty : " --no-voice-marks";
         await _processRunner.RunAsync(
             pythonPath,
-            $"\"{scriptPath}\" \"{job.ExtractedAudioPath}\" \"{vttPath}\"",
+            $"\"{scriptPath}\" \"{job.ExtractedAudioPath}\" \"{vttPath}\"{voiceMarksArg}",
             ct);
         if (!_fs.FileExists(vttPath))
             throw new FileNotFoundException($"Whisper did not produce expected VTT output: {vttPath}");

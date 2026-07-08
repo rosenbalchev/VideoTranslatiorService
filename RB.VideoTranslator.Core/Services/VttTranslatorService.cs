@@ -124,7 +124,7 @@ public sealed class VttTranslatorService : IVttTranslatorService
     }
 
     // Returns the raw text of the speaker/gender summary NOTE block that
-    // tool_wavToVtt_*.py writes immediately after the WEBVTT header, if present.
+    // tool_wavToVttVoiceMark.py writes immediately after the WEBVTT header, if present.
     // Only the block in that specific position is treated as the summary — later NOTE
     // blocks (the per-cue speaker labels) are intentionally left out of this check and
     // remain dropped from the translated output, unchanged from prior behaviour.

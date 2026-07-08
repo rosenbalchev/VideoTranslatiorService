@@ -287,7 +287,7 @@ public sealed class PipelineOrchestrator : IPipelineOrchestrator
             case JobState.AudioExtracted:
                 await _jobService.TransitionStateAsync(job.Id, JobState.ExtractingVtt, ct: ct);
                 var extracting = (await _jobService.GetJobAsync(job.Id, ct))!;
-                await _vttExtractor.ExtractAsync(extracting, options.PythonPath, ct);
+                await _vttExtractor.ExtractAsync(extracting, options.PythonPath, options.EnableVoiceMarks, ct);
                 break;
 
             case JobState.VttExtracted:

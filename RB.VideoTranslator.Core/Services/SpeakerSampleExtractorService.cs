@@ -10,7 +10,7 @@ public sealed class SpeakerSampleExtractorService : ISpeakerSampleExtractorServi
 {
     private const string SpeakerSamplesFolderName = "speaker_samples";
 
-    // Mirrors MIN_SAMPLE_DURATION_SECONDS in tool_wavToVtt_*.py — must stay identical so the
+    // Mirrors MIN_SAMPLE_DURATION_SECONDS in tool_wavToVttVoiceMark.py — must stay identical so the
     // text picked here always matches the segment the header/audio extraction used.
     private static readonly TimeSpan MinSampleDuration = TimeSpan.FromSeconds(4);
 
@@ -82,7 +82,7 @@ public sealed class SpeakerSampleExtractorService : ISpeakerSampleExtractorServi
             // Companion transcript: what the speaker said during the SAME cue the .wav was
             // extracted from. Re-derived independently from the full transcript (not the
             // header's whole-second-truncated times) using the identical selection rule as
-            // tool_wavToVtt_*.py's find_speaker_sample_segment — first cue over
+            // tool_wavToVttVoiceMark.py's find_speaker_sample_segment — first cue over
             // MinSampleDuration, falling back to the longest — so text and audio never
             // refer to different segments.
             var text = cuesBySpeaker.TryGetValue(speaker.Label, out var cues)
@@ -103,7 +103,7 @@ public sealed class SpeakerSampleExtractorService : ISpeakerSampleExtractorServi
     private static string Format(TimeSpan t) => t.ToString(@"hh\:mm\:ss");
 
     // Parses the pipe-delimited speaker rows out of the leading NOTE block written by
-    // tool_wavToVtt_*.py, e.g. "Speaker1|Female|00:00:00|00:00:26|232Hz". Lines that aren't
+    // tool_wavToVttVoiceMark.py, e.g. "Speaker1|Female|00:00:00|00:00:26|232Hz". Lines that aren't
     // valid data rows (the "NOTE" marker itself, the summary sentence) are silently skipped.
     internal static List<SpeakerRow> ParseSpeakerRows(string? leadingNote)
     {
@@ -125,7 +125,7 @@ public sealed class SpeakerSampleExtractorService : ISpeakerSampleExtractorServi
 
     internal readonly record struct SpeakerRow(string Label, string Gender, TimeSpan Start, TimeSpan End);
 
-    // Same selection rule as find_speaker_sample_segment() in tool_wavToVtt_*.py: the first
+    // Same selection rule as find_speaker_sample_segment() in tool_wavToVttVoiceMark.py: the first
     // cue (in chronological order) longer than MinSampleDuration, falling back to the longest
     // cue overall if none qualify. `cues` must be in file order, as returned by ParseCuesBySpeaker.
     internal static SpeakerCue? FindSampleCue(List<SpeakerCue> cues)
@@ -138,7 +138,7 @@ public sealed class SpeakerSampleExtractorService : ISpeakerSampleExtractorServi
         return cues.Count > 0 ? cues.MaxBy(c => c.End - c.Start) : null;
     }
 
-    // Parses the per-cue "NOTE {Label} (estimated: {gender})" comments that tool_wavToVtt_*.py
+    // Parses the per-cue "NOTE {Label} (estimated: {gender})" comments that tool_wavToVttVoiceMark.py
     // writes immediately before each diarized cue, grouping every cue's timing + text by
     // speaker label, in file order. Used to recover the actual spoken text for the segment
     // FindSampleCue selects — the header only carries whole-second-truncated times.

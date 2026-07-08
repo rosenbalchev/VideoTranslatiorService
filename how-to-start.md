@@ -25,7 +25,8 @@ Open `RB.VideoTranslator.CLI\appsettings.json` (or the copy next to the exe afte
     "PythonPath": "python",
     "DemucsPath": "python",
     "OutputFolderPath": "",
-    "UseFemaleVoice": false
+    "UseFemaleVoice": false,
+    "EnableVoiceMarks": true
   }
 }
 ```
@@ -39,6 +40,7 @@ Open `RB.VideoTranslator.CLI\appsettings.json` (or the copy next to the exe afte
 | `AzureEndpointUrl` | `https://my-res.cognitiveservices.azure.com/` | Azure Speech endpoint. |
 | `AzureOpenAiEndpoint` | `https://my-res.services.ai.azure.com/` | Azure AI Services root URL — do **not** append `/openai/v1`. |
 | `TranslationTargetLanguages` | `["Bulgarian","German"]` | Languages to translate into; voices are selected automatically. |
+| `EnableVoiceMarks` | `true` | Whether the Whisper step runs speaker diarization + gender estimation ("voice marks"). Requires `HfToken`. Set `false` to transcribe only. |
 
 Leave `VenvPath` empty — the install script fills it in automatically.
 
@@ -70,7 +72,7 @@ The install scripts require Python 3.12 specifically (`py -3.12`).
 
 ### HuggingFace (speaker diarization)
 
-The Whisper step also detects **who is speaking** and estimates each speaker's gender by pitch, writing them as `NOTE Speaker2 (estimated: female)` comments above each VTT cue. This uses gated pyannote models, so it needs a one-time HuggingFace token. Skip this if you don't need speaker labels — transcription still works without it.
+The Whisper step also detects **who is speaking** and estimates each speaker's gender by pitch, writing them as `NOTE Speaker2 (estimated: female)` comments above each VTT cue ("voice marks"). This uses gated pyannote models, so it needs a one-time HuggingFace token. Skip this if you don't need speaker labels — set `EnableVoiceMarks` to `false` in `appsettings.json` and transcription still works without it.
 
 1. Create a free account at https://huggingface.co/join (or log in if you have one).
 2. Accept the model terms on **both** gated model pages individually (click **"Agree and access repository"** on each):
@@ -217,8 +219,8 @@ The orchestrator reads the last committed state from the SQLite database (`<Work
 | Azure TTS timeout errors | Transient SDK issue | Automatically retried up to 3 times; silence is substituted if all fail |
 | `No voice configured for language 'X'` | Language not in voice map | Add an entry to `PipelineOrchestrator.VoiceMap` |
 | Job stuck after restart | Unexpected state in DB | Check `ErrorMessage` column in `videotranslator.db` |
-| `Speaker diarization requires a HuggingFace token` | `HfToken` empty/not cached | Set `HfToken` in `appsettings.json` and re-run the install script, or pass `--no-diarize` for plain transcription |
+| `Speaker diarization requires a HuggingFace token` | `HfToken` empty/not cached | Set `HfToken` in `appsettings.json` and re-run the install script, or set `EnableVoiceMarks` to `false` for plain transcription |
 | `Could not download 'pyannote/segmentation-3.0' model` (or `speaker-diarization-3.1`), even though the token is valid | Only one of the two gated model pages was accepted — see the note in Step 3 | Visit and accept terms at **both** https://huggingface.co/pyannote/speaker-diarization-3.1 and https://huggingface.co/pyannote/segmentation-3.0 with the account that owns the token |
 | `AssertionError: Torch not compiled with CUDA enabled` after a previously-working GPU install | An unpinned `pip install whisperx` (or its `pyannote-audio`/`nvidia-cudnn-cu12` dependencies) upgraded, silently replacing the CUDA-pinned PyTorch with a CPU-only build from PyPI | Re-run `install-cuda.bat` — it now pins `whisperx==3.4.2`, `pyannote-audio==3.4.0`, `speechbrain==1.0.3`, `nvidia-cudnn-cu12==8.9.7.29` for exactly this reason. If a venv is already broken this way, it's usually faster to delete it and re-run the install script fresh than to fix packages one at a time |
-| `Could not locate cudnn_ops_infer64_8.dll. Please make sure it is in your library path!` | cuDNN 9 got installed instead of the 8.x line ctranslate2 needs, or (if the DLL is actually present) the venv's `nvidia-*-cu12` package folders aren't on `PATH` for this process | `tool_wavToVtt_GPU.py` adds those folders to `PATH` automatically at startup — if you still see this, re-run `install-cuda.bat` to restore the pinned `nvidia-cudnn-cu12==8.9.7.29` |
+| `Could not locate cudnn_ops_infer64_8.dll. Please make sure it is in your library path!` | cuDNN 9 got installed instead of the 8.x line ctranslate2 needs, or (if the DLL is actually present) the venv's `nvidia-*-cu12` package folders aren't on `PATH` for this process | `tool_wavToVttVoiceMark.py` adds those folders to `PATH` automatically at startup — if you still see this, re-run `install-cuda.bat` to restore the pinned `nvidia-cudnn-cu12==8.9.7.29` |
 | HuggingFace login step crashes with `UnicodeEncodeError: 'charmap' codec can't encode characters` | The deprecated `huggingface-cli login` prints a warning with an emoji that the default Windows `cp1252` console can't render | Already fixed in the install scripts (they use `hf auth login` with `PYTHONUTF8=1`) — re-run the install script if you're on an older copy |
