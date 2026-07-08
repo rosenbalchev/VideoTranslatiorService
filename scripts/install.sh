@@ -184,20 +184,38 @@ echo "       (whisperx pinned to 3.4.2, pyannote-audio to 3.4.0, speechbrain to 
 echo "       see scripts/dependencies.json \"commonNotes\" for why)"
 COMMON_PKGS="$("$PYTHON_BIN" -c "import json; print(' '.join(json.load(open('$DEPSFILE', encoding='utf-8-sig'))['common']))")"
 if [ "$MODE" = "cuda" ]; then
-    echo "       (+ CUDA runtime libs: nvidia-cublas-cu12, nvidia-cudnn-cu12 — see"
-    echo "       scripts/dependencies.json \"cuda.notes\" for why)"
-    EXTRA_PKGS="$("$PYTHON_BIN" -c "import json; print(' '.join(json.load(open('$DEPSFILE', encoding='utf-8-sig'))['cuda'].get('extra', [])))")"
+    # Linux uses a different CUDA extra set than Windows — see "cuda.notes" in
+    # dependencies.json for why (torch hard-links libcudnn.so.9 at import time
+    # on Linux, so the Windows-style cuDNN-8 downgrade breaks `import torch`).
+    if [ "$OS_NAME" = "Linux" ]; then
+        EXTRA_KEY="linuxExtra"
+    else
+        EXTRA_KEY="extra"
+    fi
+    echo "       (+ CUDA runtime libs — see scripts/dependencies.json \"cuda.notes\" for why)"
+    EXTRA_PKGS="$("$PYTHON_BIN" -c "import json; print(' '.join(json.load(open('$DEPSFILE', encoding='utf-8-sig'))['cuda'].get('$EXTRA_KEY', [])))")"
     pip install $COMMON_PKGS $EXTRA_PKGS
 else
     pip install $COMMON_PKGS
+fi
+
+# On Linux+CUDA, force-upgrade ctranslate2 past whisperx's own <4.5.0 cap so it
+# picks up cuDNN 9 support — matches the cuDNN 9 that torch already pulled in
+# above. See "cuda.notes" in dependencies.json for the full story.
+if [ "$MODE" = "cuda" ] && [ "$OS_NAME" = "Linux" ]; then
+    CTRANSLATE2_OVERRIDE="$("$PYTHON_BIN" -c "import json; print(' '.join(json.load(open('$DEPSFILE', encoding='utf-8-sig'))['cuda'].get('linuxPostInstall', [])))")"
+    if [ -n "$CTRANSLATE2_OVERRIDE" ]; then
+        echo "       Forcing ctranslate2 to a cuDNN-9-compatible version ($CTRANSLATE2_OVERRIDE)..."
+        pip install $CTRANSLATE2_OVERRIDE
+    fi
 fi
 
 # ctranslate2 (whisperx's transcription backend) ships a prebuilt .so with an
 # executable-stack ELF flag. glibc 2.41+ (Ubuntu 24.10+, other rolling distros)
 # refuses to mmap that and transcription fails with "cannot enable executable
 # stack as shared object requires: Invalid argument". Clearing the flag with
-# patchelf is the fix — upgrading ctranslate2 isn't an option since whisperx
-# 3.4.2 pins it <4.5.0 (see commonNotes above). https://github.com/OpenNMT/CTranslate2/issues/1849
+# patchelf fixes it regardless of which ctranslate2 version ends up installed.
+# https://github.com/OpenNMT/CTranslate2/issues/1849
 if [ "$OS_NAME" = "Linux" ]; then
     echo "       Patching ctranslate2 shared libraries (executable-stack glibc 2.41+ issue)..."
     if ! command -v patchelf >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
