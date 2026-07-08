@@ -88,36 +88,60 @@ All values can be overridden at run-time with CLI arguments (see [All options](#
 
 ## 2. Run the install script
 
-From the repository root, choose the script that matches your hardware:
+From the repository root, run the script for your OS. Both scripts **auto-detect NVIDIA/CUDA hardware** (`nvidia-smi`) and install the matching PyTorch build — no need to choose manually. Pass `--cuda` or `--cpu` to force a build regardless of what's detected (e.g. right after installing/removing a GPU driver).
 
-| Script | When to use |
-|--------|-------------|
-| `scripts\install-cuda.bat` | NVIDIA GPU — installs PyTorch 2.5.1 with CUDA 12.4 (5–10× faster) |
-| `scripts\install-cpu.bat`  | No GPU — installs CPU-only PyTorch 2.5.1 |
+| Platform | Script |
+|----------|--------|
+| Windows | `scripts\install.bat` |
+| Linux / macOS | `scripts/install.sh` |
+
+```bat
+:: Windows
+scripts\install.bat            REM auto-detect
+scripts\install.bat --cuda     REM force CUDA build
+scripts\install.bat --cpu      REM force CPU build
+```
+
+```bash
+# Linux / macOS
+scripts/install.sh             # auto-detect
+scripts/install.sh --cuda      # force CUDA build (Linux only — macOS has no CUDA)
+scripts/install.sh --cpu       # force CPU build
+```
+
+Package versions and pinning rationale live in one place: `scripts/dependencies.json`. Both scripts read from it, so there's a single source of truth instead of duplicated pins.
 
 The script will:
 1. Read `WorkingFolderPath` from `appsettings.json`
 2. Create the `input`, `processing`, `output` subfolders
-3. Install ffmpeg via winget
-4. Create a Python 3.12 virtual environment at `<WorkingFolderPath>\rb.video.translator`
+3. Install ffmpeg (winget on Windows, Homebrew on macOS, apt on Linux)
+4. Create a Python 3.12 virtual environment at `<WorkingFolderPath>/rb.video.translator`
 5. Install PyTorch, Demucs, WhisperX + librosa (and CUDA runtime libs if CUDA)
 6. Cache the `HfToken` login for speaker diarization, if set
 7. Write `VenvPath` back into `appsettings.json` automatically
 
 After this step `appsettings.json` will have `VenvPath` filled and no further CLI flags are needed.
 
+To remove the environment later: `scripts\uninstall.bat` (Windows) or `scripts/uninstall.sh` (Linux/macOS).
+
 ---
 
 ## 3. Build and run
 
-```bat
+```bash
 dotnet build --configuration Release
 ```
 
-Place video files (`.mp4`, `.mkv`, `.avi`, `.mov`, `.webm`) in `<WorkingFolderPath>\input`, then run:
+Place video files (`.mp4`, `.mkv`, `.avi`, `.mov`, `.webm`) in `<WorkingFolderPath>/input`, then run:
 
 ```bat
+:: Windows
 RB.VideoTranslator.CLI\bin\Release\net10.0\RB.VideoTranslator.CLI.exe
+```
+
+```bash
+# Linux / macOS
+dotnet RB.VideoTranslator.CLI/bin/Release/net10.0/RB.VideoTranslator.CLI.dll
 ```
 
 No CLI arguments are required when `appsettings.json` is fully configured.

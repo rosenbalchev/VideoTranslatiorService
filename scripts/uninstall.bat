@@ -70,7 +70,7 @@ powershell -NoProfile -Command ^
     "$f = '%APPSETTINGS%'; $j = Get-Content $f -Raw | ConvertFrom-Json; $j.RBVideoTranslator.VenvPath = ''; $j | ConvertTo-Json -Depth 10 | Set-Content $f -Encoding UTF8"
 if errorlevel 1 ( echo WARNING: Could not clear VenvPath in appsettings.json — clear it manually. )
 
-echo  Done. Run install-cuda.bat or install-cpu.bat to reinstall.
+echo  Done. Run install.bat to reinstall.
 
 :done
 echo.

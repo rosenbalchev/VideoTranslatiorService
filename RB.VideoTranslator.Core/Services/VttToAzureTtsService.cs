@@ -110,6 +110,18 @@ public sealed class VttToAzureTtsService : IVttToAzureTtsService
 
     private const int MaxTtsRetries = 3;
 
+    // Extra attempts made when synthesised audio overruns its subtitle window. Each retry
+    // recalculates the prosody rate from the actual overrun ratio (measured audio duration,
+    // not the pre-synthesis chars/sec estimate), so it converges on the real window fit.
+    private const int MaxOverrunRetries = 2;
+
+    // Retries are allowed to push the rate past MaxRatePct — that cap governs the
+    // pre-synthesis estimate, whereas here we're correcting a measured overrun.
+    private const double MaxOverrunRetryRatePct = 200.0;
+
+    // Overrun below this is not worth a re-synthesis round-trip.
+    private const int OverrunToleranceMs = 100;
+
     private async Task<byte[]> SynthesisePerEntryAsync(
         IReadOnlyList<VttEntry> entries,
         string endpointUrl,
@@ -182,6 +194,43 @@ public sealed class VttToAzureTtsService : IVttToAzureTtsService
                 }
             }
 
+            // If the synthesised audio overruns its subtitle window, recalculate the prosody
+            // rate from the actual overrun ratio and re-synthesise so the audio matches the
+            // window. An underrun is left alone — Phase 2 pads it with trailing silence.
+            if (result is not null && expectedMs > 0)
+            {
+                for (int overrunAttempt = 1; overrunAttempt <= MaxOverrunRetries; overrunAttempt++)
+                {
+                    var actualMs = result.DurationMs;
+                    if (actualMs <= expectedMs + OverrunToleranceMs)
+                        break;
+
+                    var newRate = Math.Min(rate * actualMs / expectedMs, MaxOverrunRetryRatePct);
+                    if (newRate <= rate)
+                        break; // already at the retry ceiling — retrying again won't help
+
+                    _logger.LogInformation(
+                        "Entry {I}/{Total} overran its window ({Actual}ms > {Expected}ms) at rate={Rate:F0}% — " +
+                        "retrying {Attempt}/{Max} at rate={NewRate:F0}%",
+                        i + 1, entries.Count, actualMs, expectedMs, rate, overrunAttempt, MaxOverrunRetries, newRate);
+
+                    rate = newRate;
+                    var retrySsml = BuildEntrySsml(entry.Text, entryVoice, lang, rate);
+                    try
+                    {
+                        result = await _engine.SpeakSsmlAsync(retrySsml, endpointUrl, subscriptionKey, entryVoice, ct);
+                    }
+                    catch (OperationCanceledException) { throw; }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(
+                            "Entry {I}/{Total} overrun retry {Attempt}/{Max} failed ({Msg}) — keeping previous audio",
+                            i + 1, entries.Count, overrunAttempt, MaxOverrunRetries, ex.Message);
+                        break;
+                    }
+                }
+            }
+
             rawResults[i] = result;
 
             if (!formatDetected && result is not null)
@@ -234,9 +283,9 @@ public sealed class VttToAzureTtsService : IVttToAzureTtsService
                 {
                     spokenMs = actualMs;
 
-                    if (actualMs > expectedMs + 100)
+                    if (actualMs > expectedMs + OverrunToleranceMs)
                         _logger.LogWarning(
-                            "Entry {I}/{Total} TTS audio ({Actual}ms) overran its window ({Expected}ms) by {Over}ms",
+                            "Entry {I}/{Total} TTS audio ({Actual}ms) still overran its window ({Expected}ms) by {Over}ms after retries",
                             i + 1, entries.Count, actualMs, expectedMs, actualMs - expectedMs);
                 }
             }
@@ -303,8 +352,8 @@ public sealed class VttToAzureTtsService : IVttToAzureTtsService
     // Default speaking rate applied to all normal entries — slightly slower than the
     // neural voice's natural pace to give the listener comfortable time to follow.
     // Only raised above this when text would genuinely overflow its subtitle window.
-    public const double DefaultRatePct = 130.0;
-    public const double MaxRatePct     = 130.0;
+    public const double DefaultRatePct = 120.0;
+    public const double MaxRatePct     = 120.0;
 
     internal static string BuildSsml(
         IReadOnlyList<VttEntry> entries,

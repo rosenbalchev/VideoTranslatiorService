@@ -1,0 +1,53 @@
+{
+  "_comment": "Single source of truth for install.sh / install.bat. Edit versions here only.",
+  "pythonVersion": "3.12",
+  "system": {
+    "ffmpeg": {
+      "winget": "Gyan.FFmpeg.Shared",
+      "brew": "ffmpeg",
+      "apt": "ffmpeg"
+    }
+  },
+  "common": [
+    "soundfile",
+    "demucs",
+    "whisperx==3.4.2",
+    "pyannote-audio==3.4.0",
+    "speechbrain==1.0.3",
+    "librosa"
+  ],
+  "commonNotes": [
+    "whisperx pinned to 3.4.2 — 3.5+ requires torch 2.7.1+, which would silently upgrade the pinned torch above and pull in torchcodec.",
+    "pyannote-audio pinned to 3.4.0 — 4.0+ requires torch 2.8+ / torchcodec, same trap, pulled in transitively by whisperx's unbounded requirement.",
+    "speechbrain pinned to 1.0.3 — 1.1.0 adds a lazy-import k2 integration that crashes under Python 3.12 when k2 is not installed (hasattr no longer swallows ImportError), triggered by pytorch_lightning's inspect.stack() call while loading pyannote's VAD model."
+  ],
+  "cuda": {
+    "indexUrl": "https://download.pytorch.org/whl/cu124",
+    "torch": [
+      "torch==2.5.1+cu124",
+      "torchvision==0.20.1+cu124",
+      "torchaudio==2.5.1+cu124"
+    ],
+    "extra": [
+      "nvidia-cublas-cu12",
+      "nvidia-cudnn-cu12==8.9.7.29"
+    ],
+    "notes": [
+      "Pinned to 2.5.1 — 2.6+ requires torchcodec which has no Windows build.",
+      "cu124 requires CUDA 12.4+ drivers (Game Ready 550+ / Studio 555+); backward-compatible with newer runtimes (12.6, 12.8).",
+      "nvidia-cudnn-cu12 pinned to the 8.x line — ctranslate2 (whisperx's transcription backend, pinned <4.5.0) needs cuDNN 8's split libraries (cudnn_ops_infer64_8.dll); cuDNN 9 (the unpinned default) removed them."
+    ]
+  },
+  "cpu": {
+    "indexUrl": "https://download.pytorch.org/whl/cpu",
+    "torch": [
+      "torch==2.5.1",
+      "torchvision==0.20.1",
+      "torchaudio==2.5.1"
+    ],
+    "notes": [
+      "Same 2.5.1 pin as CUDA — 2.6+ requires torchcodec which has no Windows build.",
+      "macOS has no CUDA hardware, so it always installs this set, but from the default PyPI index (no --index-url) since download.pytorch.org/whl/cpu does not publish macOS wheels."
+    ]
+  }
+}

@@ -2,22 +2,24 @@
 setlocal enabledelayedexpansion
 
 echo ============================================================
-echo  RB.VideoTranslator - Python environment setup (CPU only)
+echo  RB.VideoTranslator - Python environment setup
 echo ============================================================
 echo.
-echo  NOTE: Running on CPU is supported but significantly slower.
-echo        Whisper transcription and Demucs separation both
-echo        benefit greatly from a CUDA-capable NVIDIA GPU.
-echo        Use install-cuda.bat if you have one.
-echo.
 
-:: ── Read WorkingFolderPath from appsettings.json ─────────────────────────────
+:: ── Locate config files ──────────────────────────────────────────────────────
 set APPSETTINGS=%~dp0..\RB.VideoTranslator.CLI\appsettings.json
+set DEPSFILE=%~dp0dependencies.json
+
 if not exist "%APPSETTINGS%" (
     echo ERROR: appsettings.json not found at:
     echo        %APPSETTINGS%
     echo.
     echo  Set WorkingFolderPath in that file before running this script.
+    exit /b 1
+)
+if not exist "%DEPSFILE%" (
+    echo ERROR: dependencies.json not found at:
+    echo        %DEPSFILE%
     exit /b 1
 )
 
@@ -63,48 +65,83 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo [1/8] Installing FFmpeg ^(system dependency^)...
-winget install -e --id Gyan.FFmpeg.Shared
+:: ── Detect NVIDIA GPU / CUDA (pass --cuda or --cpu to override) ──────────────
+set MODE=cpu
+if /i "%~1"=="--cuda" set MODE=cuda
+if /i "%~1"=="--cpu"  set MODE=cpu
+if "%~1"=="" (
+    where nvidia-smi >nul 2>&1
+    if not errorlevel 1 (
+        nvidia-smi >nul 2>&1
+        if not errorlevel 1 set MODE=cuda
+    )
+)
+
+if "!MODE!"=="cuda" (
+    echo  Hardware       : NVIDIA GPU detected ^(nvidia-smi^) — installing CUDA build
+) else (
+    echo  Hardware       : No CUDA GPU detected — installing CPU build
+    echo                   ^(pass --cuda to force the CUDA build, e.g. after a driver install^)
+)
+echo.
+
+echo [1/7] Installing FFmpeg ^(system dependency^)...
+for /f "delims=" %%i in ('powershell -NoProfile -Command ^
+    "(Get-Content '%DEPSFILE%' -Raw | ConvertFrom-Json).system.ffmpeg.winget"') do set FFMPEG_PKG=%%i
+winget install -e --id !FFMPEG_PKG!
 if errorlevel 1 ( echo ERROR: Failed to install FFmpeg. Make sure winget is available. & exit /b 1 )
 
-echo [2/8] Creating virtual environment "rb.video.translator" in working folder...
+echo [2/7] Creating virtual environment "rb.video.translator" in working folder...
 py -3.12 -m venv "!VENV_PATH!"
 if errorlevel 1 ( echo ERROR: Failed to create virtual environment. & exit /b 1 )
 
-echo [3/8] Activating environment...
+echo [3/7] Activating environment...
 call "!VENV_PATH!\Scripts\activate.bat"
 if errorlevel 1 ( echo ERROR: Failed to activate virtual environment. & exit /b 1 )
 
-echo [4/8] Upgrading pip...
+echo [4/7] Upgrading pip...
 python -m pip install --upgrade pip --quiet
 
-echo [5/8] Installing PyTorch 2.5.1 ^(CPU^) + Demucs...
+echo [5/7] Installing PyTorch 2.5.1 ^(!MODE!^) + Demucs...
 echo        ^(This can take several minutes - PyTorch is a large download^)
 echo        ^(Pinned to 2.5.1 — 2.6+ requires torchcodec which has no Windows build^)
-pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cpu
+set TORCH_PKGS=
+for /f "delims=" %%i in ('powershell -NoProfile -Command ^
+    "(Get-Content '%DEPSFILE%' -Raw | ConvertFrom-Json).!MODE!.torch -join ' ' "') do set TORCH_PKGS=%%i
+set TORCH_INDEX=
+for /f "delims=" %%i in ('powershell -NoProfile -Command ^
+    "(Get-Content '%DEPSFILE%' -Raw | ConvertFrom-Json).!MODE!.indexUrl"') do set TORCH_INDEX=%%i
+pip install !TORCH_PKGS! --index-url !TORCH_INDEX!
 if errorlevel 1 ( echo ERROR: Failed to install PyTorch. & exit /b 1 )
 pip install soundfile
 if errorlevel 1 ( echo ERROR: Failed to install soundfile. & exit /b 1 )
 pip install demucs
 if errorlevel 1 ( echo ERROR: Failed to install Demucs. & exit /b 1 )
 
-echo [6/8] Installing WhisperX ^(transcription + speaker diarization^)...
-echo        ^(whisperx pinned to 3.4.2 — 3.5+ requires torch 2.7.1+, which would
-echo        silently upgrade the pinned torch above and pull in torchcodec.
-echo        pyannote-audio pinned to 3.4.0 — 4.0+ requires torch 2.8+ / torchcodec,
-echo        same trap, pulled in transitively by whisperx's unbounded requirement.
-echo        speechbrain pinned to 1.0.3 — 1.1.0 adds a lazy-import k2 integration
-echo        that crashes under Python 3.12 when k2 is not installed ^(hasattr no
-echo        longer swallows ImportError^), which is triggered by pytorch_lightning's
-echo        inspect.stack^(^) call while loading pyannote's VAD model^)
-pip install whisperx==3.4.2 pyannote-audio==3.4.0 speechbrain==1.0.3
+echo        Patching torchaudio to fall back to soundfile ^(no torchcodec build for Windows^)...
+python "%~dp0patch_torchaudio.py"
+if errorlevel 1 echo        WARNING: torchaudio patch did not apply — continuing anyway.
+
+echo [6/7] Installing WhisperX ^(transcription + speaker diarization^)...
+echo        ^(whisperx pinned to 3.4.2, pyannote-audio to 3.4.0, speechbrain to 1.0.3 —
+echo        see scripts\dependencies.json "commonNotes" for why^)
+set COMMON_PKGS=
+for /f "delims=" %%i in ('powershell -NoProfile -Command ^
+    "(Get-Content '%DEPSFILE%' -Raw | ConvertFrom-Json).common -join ' ' "') do set COMMON_PKGS=%%i
+
+if "!MODE!"=="cuda" (
+    echo        ^(+ CUDA runtime libs: nvidia-cublas-cu12, nvidia-cudnn-cu12 — see
+    echo        scripts\dependencies.json "cuda.notes" for why^)
+    set EXTRA_PKGS=
+    for /f "delims=" %%i in ('powershell -NoProfile -Command ^
+        "(Get-Content '%DEPSFILE%' -Raw | ConvertFrom-Json).cuda.extra -join ' ' "') do set EXTRA_PKGS=%%i
+    pip install !COMMON_PKGS! !EXTRA_PKGS!
+) else (
+    pip install !COMMON_PKGS!
+)
 if errorlevel 1 ( echo ERROR: Failed to install WhisperX. & exit /b 1 )
 
-echo [7/8] Installing librosa ^(pitch-based gender estimation^)...
-pip install librosa
-if errorlevel 1 ( echo ERROR: Failed to install librosa. & exit /b 1 )
-
-echo [8/8] Caching HuggingFace token for speaker diarization...
+echo [7/7] Caching HuggingFace token for speaker diarization...
 if not "!HF_TOKEN_VALUE!"=="" (
     :: huggingface-cli is deprecated in favour of `hf`, and its deprecation-notice
     :: emoji crashes with UnicodeEncodeError on the default cp1252 console — force UTF-8.
@@ -125,22 +162,33 @@ if errorlevel 1 ( echo WARNING: Could not update VenvPath in appsettings.json �
 
 echo.
 echo ============================================================
-echo  Done!
+echo  Done! ^(mode: !MODE!^)
 echo ============================================================
 echo.
 echo  Verify the installation:
 echo    "!VENV_PATH!\Scripts\activate"
 echo    python -c "import whisperx; print('WhisperX OK')"
 echo    python -c "import librosa; print('librosa OK')"
-echo    python -c "import torch; print('PyTorch OK')"
+echo    python -c "import torch; print('CUDA available:', torch.cuda.is_available())"
 echo    python -c "import demucs; print('Demucs OK')"
 echo    ffmpeg -version
 echo.
+if "!MODE!"=="cuda" (
+    echo  NOTE: cu124 requires CUDA 12.4+ drivers ^(Game Ready 550+ / Studio 555+^).
+    echo        Runs fine on newer hardware ^(12.6, 12.8^) — CUDA is backward-compatible.
+    echo        For older drivers visit https://pytorch.org/get-started/locally/
+    echo        to get the correct --index-url for your driver version.
+    echo.
+)
 echo  Speaker diarization needs a HuggingFace token ^(one-time setup^):
 echo    1. Accept terms at https://huggingface.co/pyannote/speaker-diarization-3.1
 echo    2. Accept terms at https://huggingface.co/pyannote/segmentation-3.0
 echo    3. Create a read-scoped token at https://huggingface.co/settings/tokens
 echo    4. Put it in RBVideoTranslator.HfToken in appsettings.json, then re-run this script
+echo.
+echo  Force a specific build regardless of detected hardware:
+echo    scripts\install.bat --cuda
+echo    scripts\install.bat --cpu
 echo ============================================================
 
 endlocal

@@ -6,7 +6,7 @@
 # For NVIDIA GPU acceleration, additionally:
 #   pip install nvidia-cublas-cu12 nvidia-cudnn-cu12
 # (also needs an NVIDIA driver + CUDA/cuDNN compatible with faster-whisper/CTranslate2).
-# See install-cuda.bat / install-cpu.bat.
+# See scripts/install.bat (Windows) / scripts/install.sh (Linux/macOS).
 #
 # This script auto-detects a usable CUDA GPU at startup (torch.cuda.is_available())
 # and picks the model size/precision for whichever device it finds — no separate
