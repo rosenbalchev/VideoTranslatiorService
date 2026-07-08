@@ -73,7 +73,7 @@ public sealed class DefaultProcessRunner : IProcessRunner
             var cudaLibraryPath = BuildLinuxCudaLibraryPath(executable);
             if (cudaLibraryPath is not null)
             {
-                var existing = startInfo.EnvironmentVariables["LD_LIBRARY_PATH"];
+                var existing = Environment.GetEnvironmentVariable("LD_LIBRARY_PATH");
                 startInfo.EnvironmentVariables["LD_LIBRARY_PATH"] = string.IsNullOrEmpty(existing)
                     ? cudaLibraryPath
                     : $"{cudaLibraryPath}{Path.PathSeparator}{existing}";
@@ -93,7 +93,7 @@ public sealed class DefaultProcessRunner : IProcessRunner
     // Python interpreter (as the Windows PATH-prepend equivalent does) has no
     // effect on Linux. It has to be set here, before the child process starts.
     // https://github.com/m-bain/whisperX/issues/1297
-    private static string? BuildLinuxCudaLibraryPath(string executable)
+    internal static string? BuildLinuxCudaLibraryPath(string executable)
     {
         if (Path.GetFileName(executable) is not ("python" or "python3"))
             return null;
