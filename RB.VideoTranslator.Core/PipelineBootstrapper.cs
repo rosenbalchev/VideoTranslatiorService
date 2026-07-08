@@ -43,6 +43,7 @@ public sealed class PipelineBootstrapper : IPipelineRunner
         var db = sp.GetRequiredService<AppDbContext>();
         await db.Database.EnsureCreatedAsync();
         await MigrateSchemaAsync(db);
+        await EnsureVoicePaceTableAsync(db);
 
         // Setup folder structure and normalize configuration
         SetupFolders();
@@ -106,6 +107,34 @@ public sealed class PipelineBootstrapper : IPipelineRunner
                 catch { /* best-effort */ }
             }
         }
+    }
+
+    // VoicePaceStats is a new, independent table added after EnsureCreatedAsync's
+    // all-or-nothing check was already satisfied for existing installs (it only creates
+    // the schema when the database file doesn't exist yet, not per-table). Since it has
+    // no relation to VideoJobs, creating it directly is simpler and safer than the
+    // recreate-the-whole-database approach MigrateSchemaAsync uses for column changes.
+    private static async Task EnsureVoicePaceTableAsync(AppDbContext db)
+    {
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "VoicePaceStats" (
+                "Voice" TEXT NOT NULL CONSTRAINT "PK_VoicePaceStats" PRIMARY KEY,
+                "TotalChars" REAL NOT NULL,
+                "TotalNaturalMs" REAL NOT NULL,
+                "SampleCount" INTEGER NOT NULL,
+                "LastRateUsed" REAL NOT NULL,
+                "UpdatedAt" TEXT NOT NULL
+            );
+            """);
+
+        // Additive column for installs that already created VoicePaceStats without it
+        // (this file shipped before LastRateUsed was added).
+        try
+        {
+            await db.Database.ExecuteSqlRawAsync(
+                """ALTER TABLE "VoicePaceStats" ADD COLUMN "LastRateUsed" REAL NOT NULL DEFAULT 0;""");
+        }
+        catch { /* column already exists — best-effort */ }
     }
 
     /// <summary>
@@ -204,6 +233,7 @@ public sealed class PipelineBootstrapper : IPipelineRunner
                 .AddFilter("Microsoft.EntityFrameworkCore", LogLevel.Warning))
             .AddDbContext<AppDbContext>(o => o.UseSqlite($"Data Source={dbPath}"))
             .AddScoped<IVideoJobRepository, VideoJobRepository>()
+            .AddScoped<IVoicePaceRepository, VoicePaceRepository>()
             .AddRBVideoTranslator(configuration, configureOverrides)
             .BuildServiceProvider();
     }

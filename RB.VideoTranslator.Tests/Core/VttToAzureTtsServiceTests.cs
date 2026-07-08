@@ -68,11 +68,20 @@ public sealed class VttToAzureTtsServiceTests
         out IVideoJobRepository repo,
         out IFileSystem fs,
         out IAzureSpeechEngine engine,
+        string vttContent = SampleVtt) =>
+        MakeSut(out repo, out fs, out engine, out _, vttContent);
+
+    private VttToAzureTtsService MakeSut(
+        out IVideoJobRepository repo,
+        out IFileSystem fs,
+        out IAzureSpeechEngine engine,
+        out IVoicePaceRepository voicePaceRepo,
         string vttContent = SampleVtt)
     {
-        repo   = Substitute.For<IVideoJobRepository>();
-        fs     = Substitute.For<IFileSystem>();
-        engine = Substitute.For<IAzureSpeechEngine>();
+        repo          = Substitute.For<IVideoJobRepository>();
+        fs            = Substitute.For<IFileSystem>();
+        engine        = Substitute.For<IAzureSpeechEngine>();
+        voicePaceRepo = Substitute.For<IVoicePaceRepository>();
 
         fs.ReadAllTextAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
             .Returns(Task.FromResult(vttContent));
@@ -81,9 +90,14 @@ public sealed class VttToAzureTtsServiceTests
                 Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(),
                 Arg.Any<string>(), Arg.Any<CancellationToken>())
             .Returns(Task.FromResult(FakeEngineResult));
+        // No prior learning history by default — individual tests override this to
+        // simulate a voice with accumulated pace data from earlier sessions.
+        voicePaceRepo.GetAllAsync(Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<IReadOnlyDictionary<string, VoicePaceStat>>(
+                new Dictionary<string, VoicePaceStat>()));
 
         return new VttToAzureTtsService(
-            repo, fs, engine,
+            repo, fs, engine, voicePaceRepo,
             NullLogger<VttToAzureTtsService>.Instance);
     }
 
@@ -219,6 +233,49 @@ public sealed class VttToAzureTtsServiceTests
         await engine.Received().SpeakSsmlAsync(
             Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(),
             "en-US-Ava:DragonHDLatestNeural", Arg.Any<CancellationToken>());
+    }
+
+    // ── Voice pace learning persistence ───────────────────────────────────────
+
+    [Fact]
+    public async Task SynthesiseAsync_RecordsSamplesToVoicePaceRepository()
+    {
+        var sut = MakeSut(out _, out _, out var engine, out var voicePaceRepo);
+
+        await sut.SynthesiseAsync(MakeJob(), "key", "https://ep/", "en-US-Ava:DragonHDLatestNeural");
+
+        await voicePaceRepo.Received().RecordSampleAsync(
+            "en-US-Ava:DragonHDLatestNeural", Arg.Any<int>(), Arg.Any<double>(), Arg.Any<int>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task SynthesiseAsync_UsesPersistedVoiceHistoryToPickInitialRate()
+    {
+        // "Hello world" is 11 chars in a 2000ms window (SampleVtt's first entry).
+        // A voice already known (from prior sessions) to speak at 3 chars/sec needs
+        // (11/3*1000)/2000*100 ≈ 183% to fit — nowhere near DefaultRatePct (120%),
+        // which is what a cold-start (no history) session would request instead.
+        const string voice = "en-US-Ava:DragonHDLatestNeural";
+        var history = new Dictionary<string, VoicePaceStat>
+        {
+            [voice] = new VoicePaceStat
+            {
+                Voice          = voice,
+                TotalChars     = 300,
+                TotalNaturalMs = 100_000, // 300 chars / 100s = 3 chars/sec at rate=100%
+                SampleCount    = VttToAzureTtsService.VoicePaceRampFullSamples, // fully ramped
+            }
+        };
+
+        var sut = MakeSut(out _, out _, out var engine, out var voicePaceRepo);
+        voicePaceRepo.GetAllAsync(Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<IReadOnlyDictionary<string, VoicePaceStat>>(history));
+
+        await sut.SynthesiseAsync(MakeJob(), "key", "https://ep/", voice);
+
+        await engine.Received(1).SpeakSsmlAsync(
+            Arg.Is<string>(s => s.Contains("Hello world") && s.Contains("<prosody rate=\"+83%\">")),
+            Arg.Any<string>(), Arg.Any<string>(), voice, Arg.Any<CancellationToken>());
     }
 
     // ── Per-speaker voice assignment ──────────────────────────────────────────
@@ -587,11 +644,12 @@ public sealed class VttToAzureTtsServiceTests
     }
 
     [Fact]
-    public void SpeechRateFor_ReturnsDefaultRateWhenTextIsShortForWindow()
+    public void SpeechRateFor_ClampsToMinRateWhenTextIsShortForWindow()
     {
-        // Short word, generous window → DefaultRatePct — silence padding fills the rest
+        // Short word, generous window → natural rate would be tiny (near-silent pace),
+        // clamped to MinRatePct so the voice doesn't sound unnaturally sluggish.
         var rate = VttToAzureTtsService.SpeechRateFor("Hi", availableMs: 5000);
-        Assert.Equal(VttToAzureTtsService.DefaultRatePct, rate);
+        Assert.Equal(VttToAzureTtsService.MinRatePct, rate);
     }
 
     [Fact]
@@ -602,11 +660,22 @@ public sealed class VttToAzureTtsServiceTests
     }
 
     [Fact]
-    public void SpeechRateFor_ClampsToDefaultRate()
+    public void SpeechRateFor_ClampsToMinRate()
     {
-        // Even for very short text in a very wide window, we never go below DefaultRatePct.
+        // Even for very short text in a very wide window, we never go below MinRatePct.
         var rate = VttToAzureTtsService.SpeechRateFor("Hi", availableMs: 60_000);
-        Assert.Equal(VttToAzureTtsService.DefaultRatePct, rate);
+        Assert.Equal(VttToAzureTtsService.MinRatePct, rate);
+    }
+
+    [Fact]
+    public void SpeechRateFor_ReturnsExactNaturalRateBetweenMinAndMax()
+    {
+        // 20 chars at 10 c/s = 2000ms natural, in a 2500ms window → 80%. Strictly between
+        // MinRatePct and MaxRatePct, so the computed rate should be used as-is — not
+        // floored or ceilinged — proving the rate is genuinely chars/window-driven.
+        var text = new string('x', 20);
+        var rate = VttToAzureTtsService.SpeechRateFor(text, availableMs: 2500, charsPerSecond: 10.0);
+        Assert.Equal(80.0, rate, precision: 6);
     }
 
     [Fact]
@@ -633,14 +702,169 @@ public sealed class VttToAzureTtsServiceTests
     }
 
     [Fact]
-    public void BuildSsml_AppliesDefaultRateWhenTextFitsNormally()
+    public void BuildSsml_OmitsProsodyTagWhenTextFitsWindowAtNaturalPace()
     {
-        // ~13 chars in 1000ms → estimated 1000ms → natural rate ≈ 100%, but
-        // DefaultRatePct (105%) always applies — the voice never drops to natural pace.
-        var text    = new string('x', 13); // 13 chars / 13 c/s = 1000ms
+        // 13 chars / 13 c/s = 1000ms natural — exactly fills the 1000ms window, so the
+        // computed rate is ~100% and no <prosody> wrapper is emitted at all.
+        var text    = new string('x', 13);
         var entries = new List<VttEntry> { new(0, 1000, text) };
         var ssml    = VttToAzureTtsService.BuildSsml(entries, "Voice", "en-US");
-        Assert.Contains($"<prosody rate=\"{VttToAzureTtsService.FormatRateDelta(VttToAzureTtsService.DefaultRatePct)}\">", ssml);
+        Assert.DoesNotContain("<prosody", ssml);
+        Assert.Contains(text, ssml);
+    }
+
+    [Fact]
+    public void BuildSsml_SlowsDownForGenerousWindow()
+    {
+        // 13 chars / 13 c/s = 1000ms natural, in a 4000ms window → 25% natural rate,
+        // clamped up to MinRatePct — genuinely slower than DefaultRatePct used to force.
+        var text    = new string('x', 13);
+        var entries = new List<VttEntry> { new(0, 4000, text) };
+        var ssml    = VttToAzureTtsService.BuildSsml(entries, "Voice", "en-US");
+        Assert.Contains($"<prosody rate=\"{VttToAzureTtsService.FormatRateDelta(VttToAzureTtsService.MinRatePct)}\">", ssml);
+    }
+
+    // ── VoicePace / EffectiveCharsPerSecond unit tests ────────────────────────
+
+    [Fact]
+    public void VoicePace_StartsWithNoSamplesAndZeroPace()
+    {
+        var pace = new VttToAzureTtsService.VoicePace();
+        Assert.Equal(0, pace.SampleCount);
+        Assert.Equal(0, pace.CharsPerSecondAt100);
+    }
+
+    [Fact]
+    public void VoicePace_Record_DerivesNaturalPaceFromRateAndActualDuration()
+    {
+        // 40 chars spoken in 1000ms at rate=200% → at rate=100% it would take 2000ms
+        // → natural pace = 40 chars / 2s = 20 chars/sec.
+        var pace = new VttToAzureTtsService.VoicePace();
+        pace.Record(textLength: 40, rate: 200.0, actualMs: 1000);
+
+        Assert.Equal(1, pace.SampleCount);
+        Assert.Equal(20.0, pace.CharsPerSecondAt100, precision: 6);
+    }
+
+    [Fact]
+    public void VoicePace_Record_AccumulatesWeightedAverageAcrossSamples()
+    {
+        var pace = new VttToAzureTtsService.VoicePace();
+        pace.Record(textLength: 40, rate: 200.0, actualMs: 1000); // natural: 40 chars / 2000ms
+        pace.Record(textLength: 40, rate: 200.0, actualMs: 1000); // natural: 40 chars / 2000ms
+
+        Assert.Equal(2, pace.SampleCount);
+        // 80 chars / 4000ms = 20 chars/sec — same pace, more samples.
+        Assert.Equal(20.0, pace.CharsPerSecondAt100, precision: 6);
+    }
+
+    [Theory]
+    [InlineData(0, 100.0, 1000)]
+    [InlineData(40, 0.0, 1000)]
+    [InlineData(40, 100.0, 0)]
+    public void VoicePace_Record_IgnoresInvalidSamples(int textLength, double rate, int actualMs)
+    {
+        var pace = new VttToAzureTtsService.VoicePace();
+        pace.Record(textLength, rate, actualMs);
+
+        Assert.Equal(0, pace.SampleCount);
+    }
+
+    [Fact]
+    public void VoicePace_SeededConstructor_StartsFromPersistedTotals()
+    {
+        var pace = new VttToAzureTtsService.VoicePace(totalChars: 80, totalNaturalMs: 4000, sampleCount: 2);
+
+        Assert.Equal(2, pace.SampleCount);
+        Assert.Equal(20.0, pace.CharsPerSecondAt100, precision: 6);
+    }
+
+    [Fact]
+    public void RecordVoicePaceSample_CreatesEntryForUnseenVoice()
+    {
+        var voicePaces = new Dictionary<string, VttToAzureTtsService.VoicePace>();
+
+        VttToAzureTtsService.RecordVoicePaceSample(voicePaces, "VoiceA", textLength: 40, rate: 200.0, actualMs: 1000);
+
+        Assert.True(voicePaces.ContainsKey("VoiceA"));
+        Assert.Equal(1, voicePaces["VoiceA"].SampleCount);
+    }
+
+    [Fact]
+    public void RecordVoicePaceSample_AccumulatesForSameVoiceAcrossCalls()
+    {
+        var voicePaces = new Dictionary<string, VttToAzureTtsService.VoicePace>();
+
+        VttToAzureTtsService.RecordVoicePaceSample(voicePaces, "VoiceA", 40, 200.0, 1000);
+        VttToAzureTtsService.RecordVoicePaceSample(voicePaces, "VoiceA", 40, 200.0, 1000);
+
+        Assert.Equal(2, voicePaces["VoiceA"].SampleCount);
+    }
+
+    [Fact]
+    public void EffectiveCharsPerSecond_ReturnsFallback_WhenVoiceUnknown()
+    {
+        var voicePaces = new Dictionary<string, VttToAzureTtsService.VoicePace>();
+
+        var result = VttToAzureTtsService.EffectiveCharsPerSecond(voicePaces, "VoiceA", fallbackCharsPerSecond: 13.0);
+
+        Assert.Equal(13.0, result);
+    }
+
+    [Fact]
+    public void EffectiveCharsPerSecond_ReturnsFallback_AtOrBelowRampStartSamples()
+    {
+        var voicePaces = new Dictionary<string, VttToAzureTtsService.VoicePace>();
+        for (var i = 0; i < VttToAzureTtsService.VoicePaceRampStartSamples; i++)
+            VttToAzureTtsService.RecordVoicePaceSample(voicePaces, "VoiceA", 40, 200.0, 1000); // implies 20 c/s
+
+        var result = VttToAzureTtsService.EffectiveCharsPerSecond(voicePaces, "VoiceA", fallbackCharsPerSecond: 13.0);
+
+        Assert.Equal(13.0, result);
+    }
+
+    [Fact]
+    public void EffectiveCharsPerSecond_ReturnsPureVoicePace_AtOrAboveRampFullSamples()
+    {
+        var voicePaces = new Dictionary<string, VttToAzureTtsService.VoicePace>();
+        for (var i = 0; i < VttToAzureTtsService.VoicePaceRampFullSamples; i++)
+            VttToAzureTtsService.RecordVoicePaceSample(voicePaces, "VoiceA", 40, 200.0, 1000); // implies 20 c/s
+
+        var result = VttToAzureTtsService.EffectiveCharsPerSecond(voicePaces, "VoiceA", fallbackCharsPerSecond: 13.0);
+
+        Assert.Equal(20.0, result, precision: 6);
+    }
+
+    [Fact]
+    public void EffectiveCharsPerSecond_BlendsLinearlyBetweenRampStartAndRampFull()
+    {
+        var voicePaces = new Dictionary<string, VttToAzureTtsService.VoicePace>();
+        // Halfway between RampStartSamples (5) and RampFullSamples (10) = 7 or 8 samples.
+        var samples = (VttToAzureTtsService.VoicePaceRampStartSamples + VttToAzureTtsService.VoicePaceRampFullSamples) / 2;
+        for (var i = 0; i < samples; i++)
+            VttToAzureTtsService.RecordVoicePaceSample(voicePaces, "VoiceA", 40, 200.0, 1000); // implies 20 c/s
+
+        var result = VttToAzureTtsService.EffectiveCharsPerSecond(voicePaces, "VoiceA", fallbackCharsPerSecond: 13.0);
+
+        // Strictly between the fallback and the fully-learned voice pace, not equal to either.
+        Assert.InRange(result, Math.Min(13.0, 20.0), Math.Max(13.0, 20.0));
+        Assert.NotEqual(13.0, result);
+        Assert.NotEqual(20.0, result);
+    }
+
+    [Fact]
+    public void EffectiveCharsPerSecond_SeededFromPersistedHistory_SkipsRampWhenAlreadyFullyLearned()
+    {
+        // Simulates loading a voice with plenty of prior-session history — should be
+        // treated as fully learned immediately, no ramp-up needed in this session.
+        var voicePaces = new Dictionary<string, VttToAzureTtsService.VoicePace>
+        {
+            ["VoiceA"] = new VttToAzureTtsService.VoicePace(totalChars: 4000, totalNaturalMs: 200_000, sampleCount: 100)
+        };
+
+        var result = VttToAzureTtsService.EffectiveCharsPerSecond(voicePaces, "VoiceA", fallbackCharsPerSecond: 13.0);
+
+        Assert.Equal(20.0, result, precision: 6);
     }
 
     // ── FormatRateDelta unit tests ────────────────────────────────────────────

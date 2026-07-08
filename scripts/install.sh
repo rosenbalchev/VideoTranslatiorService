@@ -45,7 +45,13 @@ done
 if [ -z "$PYTHON_BIN" ]; then
     echo "ERROR: Python 3.12 not found."
     echo "       macOS:  brew install python@3.12"
-    echo "       Linux:  sudo apt install python3.12 python3.12-venv   (Debian/Ubuntu)"
+    echo "       Ubuntu/Debian: sudo apt install python3.12 python3.12-venv"
+    echo "         If that package isn't found (Ubuntu 22.04/20.04 don't ship 3.12"
+    echo "         by default — only 24.04+ does), add the deadsnakes PPA first:"
+    echo "           sudo apt install software-properties-common"
+    echo "           sudo add-apt-repository ppa:deadsnakes/ppa"
+    echo "           sudo apt update"
+    echo "           sudo apt install python3.12 python3.12-venv"
     exit 1
 fi
 echo " Python         : $("$PYTHON_BIN" --version)"
@@ -104,7 +110,21 @@ if [ "$OS_NAME" = "Darwin" ] && [ "$MODE" = "cuda" ]; then
     MODE="cpu"
 fi
 
-echo " Platform       : $OS_NAME"
+# torch/torchvision/torchaudio 2.5.1 publish plain CPU wheels for linux_aarch64, but
+# never a "+cu124" CUDA build for that architecture — real ARM64+CUDA hardware (Jetson,
+# GH200/Grace-Hopper) needs NVIDIA's own separate wheel channel, well outside what these
+# pinned index URLs serve. Without this check, nvidia-smi succeeding on such a box would
+# auto-select MODE=cuda and then fail with "No matching distribution found for
+# torch==2.5.1+cu124" deep inside pip, same failure class as Windows-on-ARM.
+ARCH="$(uname -m)"
+if [ "$MODE" = "cuda" ] && [ "$OS_NAME" = "Linux" ] && { [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; }; then
+    echo " WARNING: --cuda was requested/detected on Linux ARM64 ($ARCH), but torch 2.5.1"
+    echo "          has no CUDA build for this architecture (CPU-only wheels exist) — using CPU."
+    echo "          Jetson/GH200-class CUDA needs NVIDIA's own wheel channel, not covered here."
+    MODE="cpu"
+fi
+
+echo " Platform       : $OS_NAME ($ARCH)"
 if [ "$MODE" = "cuda" ]; then
     echo " Hardware       : NVIDIA GPU detected (nvidia-smi) — installing CUDA build"
 else
@@ -178,12 +198,56 @@ echo "       (whisperx pinned to 3.4.2, pyannote-audio to 3.4.0, speechbrain to 
 echo "       see scripts/dependencies.json \"commonNotes\" for why)"
 COMMON_PKGS="$("$PYTHON_BIN" -c "import json; print(' '.join(json.load(open('$DEPSFILE', encoding='utf-8-sig'))['common']))")"
 if [ "$MODE" = "cuda" ]; then
-    echo "       (+ CUDA runtime libs: nvidia-cublas-cu12, nvidia-cudnn-cu12 — see"
-    echo "       scripts/dependencies.json \"cuda.notes\" for why)"
-    EXTRA_PKGS="$("$PYTHON_BIN" -c "import json; print(' '.join(json.load(open('$DEPSFILE', encoding='utf-8-sig'))['cuda'].get('extra', [])))")"
+    # Linux uses a different CUDA extra set than Windows — see "cuda.notes" in
+    # dependencies.json for why (torch hard-links libcudnn.so.9 at import time
+    # on Linux, so the Windows-style cuDNN-8 downgrade breaks `import torch`).
+    if [ "$OS_NAME" = "Linux" ]; then
+        EXTRA_KEY="linuxExtra"
+    else
+        EXTRA_KEY="extra"
+    fi
+    echo "       (+ CUDA runtime libs — see scripts/dependencies.json \"cuda.notes\" for why)"
+    EXTRA_PKGS="$("$PYTHON_BIN" -c "import json; print(' '.join(json.load(open('$DEPSFILE', encoding='utf-8-sig'))['cuda'].get('$EXTRA_KEY', [])))")"
     pip install $COMMON_PKGS $EXTRA_PKGS
 else
     pip install $COMMON_PKGS
+fi
+
+# On Linux+CUDA, force-upgrade ctranslate2 past whisperx's own <4.5.0 cap so it
+# picks up cuDNN 9 support — matches the cuDNN 9 that torch already pulled in
+# above. See "cuda.notes" in dependencies.json for the full story.
+if [ "$MODE" = "cuda" ] && [ "$OS_NAME" = "Linux" ]; then
+    CTRANSLATE2_OVERRIDE="$("$PYTHON_BIN" -c "import json; print(' '.join(json.load(open('$DEPSFILE', encoding='utf-8-sig'))['cuda'].get('linuxPostInstall', [])))")"
+    if [ -n "$CTRANSLATE2_OVERRIDE" ]; then
+        echo "       Forcing ctranslate2 to a cuDNN-9-compatible version ($CTRANSLATE2_OVERRIDE)..."
+        pip install $CTRANSLATE2_OVERRIDE
+    fi
+fi
+
+# ctranslate2 (whisperx's transcription backend) ships a prebuilt .so with an
+# executable-stack ELF flag. glibc 2.41+ (Ubuntu 24.10+, other rolling distros)
+# refuses to mmap that and transcription fails with "cannot enable executable
+# stack as shared object requires: Invalid argument". Clearing the flag with
+# patchelf fixes it regardless of which ctranslate2 version ends up installed.
+# https://github.com/OpenNMT/CTranslate2/issues/1849
+if [ "$OS_NAME" = "Linux" ]; then
+    echo "       Patching ctranslate2 shared libraries (executable-stack glibc 2.41+ issue)..."
+    if ! command -v patchelf >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
+        sudo apt-get install -y patchelf || true
+    fi
+    if command -v patchelf >/dev/null 2>&1; then
+        found=0
+        while IFS= read -r -d '' so; do
+            patchelf --clear-execstack "$so" && echo "         cleared: $so"
+            found=1
+        done < <(find "$VENV_PATH/lib" -iname 'libctranslate2*.so*' -print0 2>/dev/null)
+        [ "$found" = "1" ] || echo "         (no libctranslate2*.so* found — nothing to patch)"
+    else
+        echo "       WARNING: patchelf not found and could not be installed automatically."
+        echo "         If transcription fails with 'cannot enable executable stack', run:"
+        echo "           sudo apt install patchelf"
+        echo "           find \"$VENV_PATH\" -iname 'libctranslate2*.so*' -exec patchelf --clear-execstack {} \\;"
+    fi
 fi
 
 # ── [7/7] HuggingFace token ───────────────────────────────────────────────────

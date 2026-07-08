@@ -14,12 +14,14 @@
     "whisperx==3.4.2",
     "pyannote-audio==3.4.0",
     "speechbrain==1.0.3",
-    "librosa"
+    "librosa",
+    "huggingface_hub==0.36.0"
   ],
   "commonNotes": [
     "whisperx pinned to 3.4.2 — 3.5+ requires torch 2.7.1+, which would silently upgrade the pinned torch above and pull in torchcodec.",
     "pyannote-audio pinned to 3.4.0 — 4.0+ requires torch 2.8+ / torchcodec, same trap, pulled in transitively by whisperx's unbounded requirement.",
-    "speechbrain pinned to 1.0.3 — 1.1.0 adds a lazy-import k2 integration that crashes under Python 3.12 when k2 is not installed (hasattr no longer swallows ImportError), triggered by pytorch_lightning's inspect.stack() call while loading pyannote's VAD model."
+    "speechbrain pinned to 1.0.3 — 1.1.0 adds a lazy-import k2 integration that crashes under Python 3.12 when k2 is not installed (hasattr no longer swallows ImportError), triggered by pytorch_lightning's inspect.stack() call while loading pyannote's VAD model.",
+    "huggingface_hub pinned to 0.36.0 (the last 0.x release) — 1.0.0 (Oct 2025) removed the deprecated `use_auth_token` kwarg entirely in favour of `token`. pyannote-audio 3.4.0 still calls hf_hub_download(..., use_auth_token=...) internally, so an unpinned install fails with `TypeError: hf_hub_download() got an unexpected keyword argument 'use_auth_token'` the first time diarization loads its gated model. https://github.com/huggingface/huggingface_hub/issues/1094"
   ],
   "cuda": {
     "indexUrl": "https://download.pytorch.org/whl/cu124",
@@ -32,10 +34,17 @@
       "nvidia-cublas-cu12",
       "nvidia-cudnn-cu12==8.9.7.29"
     ],
+    "linuxExtra": [
+      "nvidia-cublas-cu12"
+    ],
+    "linuxPostInstall": [
+      "ctranslate2==4.5.0"
+    ],
     "notes": [
       "Pinned to 2.5.1 — 2.6+ requires torchcodec which has no Windows build.",
       "cu124 requires CUDA 12.4+ drivers (Game Ready 550+ / Studio 555+); backward-compatible with newer runtimes (12.6, 12.8).",
-      "nvidia-cudnn-cu12 pinned to the 8.x line — ctranslate2 (whisperx's transcription backend, pinned <4.5.0) needs cuDNN 8's split libraries (cudnn_ops_infer64_8.dll); cuDNN 9 (the unpinned default) removed them."
+      "extra (Windows): nvidia-cudnn-cu12 pinned to the 8.x line — ctranslate2 (whisperx's transcription backend, pinned <4.5.0) needs cuDNN 8's split libraries (cudnn_ops_infer64_8.dll); cuDNN 9 (the unpinned default) removed them. This works on Windows because torch's own cuDNN DLL is delay-loaded — 'import torch' succeeds even without cuDNN 9 present.",
+      "linuxExtra / linuxPostInstall (Linux): torch's CUDA extension hard-links libcudnn.so.9 at import time there (no delay-loading), so the Windows-style cuDNN-8 downgrade breaks 'import torch' outright. Fix used on Linux instead: keep the cuDNN 9 that torch already pulls in, and force-upgrade ctranslate2 to 4.5.0 (adds cuDNN 9 support) after whisperx installs its own <4.5.0-pinned version — a combination reported working by whisperX users/maintainers. See https://github.com/m-bain/whisperX/issues/1158 and https://github.com/m-bain/whisperX/issues/954."
     ]
   },
   "cpu": {

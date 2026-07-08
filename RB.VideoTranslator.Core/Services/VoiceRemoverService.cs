@@ -36,15 +36,15 @@ public sealed class VoiceRemoverService : IVoiceRemoverService
         var noVocalsPath = Path.Combine(demucsOutDir, DemucsModel, audioBaseName, "no_vocals.flac");
         var vocalsPath = Path.Combine(demucsOutDir, DemucsModel, audioBaseName, "vocals.flac");
 
-        await ValidateCudaAsync(demucsPath, ct);
+        var device = await DetectDeviceAsync(demucsPath, ct);
 
         _logger.LogInformation(
-            "Removing voice from {Audio} → {NoVocals} (this may take a while)",
-            job.ExtractedAudioPath, noVocalsPath);
+            "Removing voice from {Audio} → {NoVocals} (device={Device}, this may take a while)",
+            job.ExtractedAudioPath, noVocalsPath, device);
 
         await _processRunner.RunAsync(
             demucsPath,
-            $"-m demucs --two-stems=vocals --flac --device cuda --out \"{demucsOutDir}\" \"{job.ExtractedAudioPath}\"",
+            $"-m demucs --two-stems=vocals --flac --device {device} --out \"{demucsOutDir}\" \"{job.ExtractedAudioPath}\"",
             ct);
         if (!_fs.FileExists(noVocalsPath))
             throw new FileNotFoundException($"Demucs did not produce expected output: {noVocalsPath}");
@@ -59,20 +59,28 @@ public sealed class VoiceRemoverService : IVoiceRemoverService
         _logger.LogInformation("Music bed written to {NoVocals}, isolated vocals written to {Vocals}", noVocalsPath, vocalsPath);
     }
 
-    private async Task ValidateCudaAsync(string pythonPath, CancellationToken ct)
+    // Demucs' htdemucs model (used here) has known incompatibilities with PyTorch's MPS
+    // backend — it relies on complex-valued tensors and custom ops that don't reliably
+    // work there — so unlike whisperx/tool_wavToVttVoiceMark.py's CUDA-or-CPU device
+    // selection, we deliberately don't auto-select "mps" on Apple Silicon even though
+    // it's technically available. CPU is the safe default anywhere CUDA isn't.
+    // https://github.com/facebookresearch/demucs/issues/435
+    private async Task<string> DetectDeviceAsync(string pythonPath, CancellationToken ct)
     {
-        _logger.LogInformation("Checking CUDA availability...");
+        _logger.LogInformation("Checking CUDA availability for Demucs...");
 
         var output = await _processRunner.RunAndCaptureAsync(
             pythonPath,
             "-c \"import torch; print(torch.cuda.is_available())\"",
             ct);
 
-        if (!output.Trim().Equals("True", StringComparison.OrdinalIgnoreCase))
-            throw new InvalidOperationException(
-                "CUDA is not available. Demucs requires a CUDA-capable GPU — " +
-                "ensure PyTorch with CUDA support is installed (see README).");
+        if (output.Trim().Equals("True", StringComparison.OrdinalIgnoreCase))
+        {
+            _logger.LogInformation("CUDA is available — Demucs will run on GPU");
+            return "cuda";
+        }
 
-        _logger.LogInformation("CUDA is available — Demucs will run on GPU");
+        _logger.LogInformation("CUDA not available — Demucs will run on CPU (slower)");
+        return "cpu";
     }
 }

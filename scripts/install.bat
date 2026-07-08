@@ -6,7 +6,7 @@ echo  RB.VideoTranslator - Python environment setup
 echo ============================================================
 echo.
 
-:: ── Locate config files ──────────────────────────────────────────────────────
+:: -- Locate config files ------------------------------------------------------
 set APPSETTINGS=%~dp0..\RB.VideoTranslator.CLI\appsettings.json
 set DEPSFILE=%~dp0dependencies.json
 
@@ -34,7 +34,7 @@ if "!WORK_FOLDER!"=="" (
     exit /b 1
 )
 
-:: ── Read HfToken from appsettings.json (optional — needed for diarization) ──
+:: -- Read HfToken from appsettings.json (optional - needed for diarization) --
 set HF_TOKEN_VALUE=
 for /f "delims=" %%i in ('powershell -NoProfile -Command ^
     "(Get-Content '%APPSETTINGS%' -Raw | ConvertFrom-Json).RBVideoTranslator.HfToken"') do (
@@ -51,21 +51,55 @@ if not exist "!WORK_FOLDER!\input"      mkdir "!WORK_FOLDER!\input"
 if not exist "!WORK_FOLDER!\processing" mkdir "!WORK_FOLDER!\processing"
 if not exist "!WORK_FOLDER!\output"     mkdir "!WORK_FOLDER!\output"
 
-:: ── Deactivate any active venv ────────────────────────────────────────────────
+:: -- Deactivate any active venv ------------------------------------------------
 if defined VIRTUAL_ENV (
     echo  Deactivating active virtual environment: %VIRTUAL_ENV%
     call deactivate
 )
 
-:: ── Check Python 3.12 ─────────────────────────────────────────────────────────
-py -3.12 --version >nul 2>&1
+:: -- Locate Python 3.12 (prefer a direct x64 path over the "py" launcher) -----
+:: The "py" launcher's arm64-vs-x64 tie-break for a bare "py -3.12" is NOT
+:: documented to prefer x64 the way it documents preferring 64-bit over 32-bit -
+:: if both an ARM64 and an x64 Python 3.12 are registered (e.g. after installing
+:: x64 without removing an earlier ARM64 install), "py -3.12" can still resolve
+:: to the ARM64 one. python.org/winget installers use distinct default folder
+:: names - plain "Python312" for x64, "Python312-arm64" for ARM64 - so check
+:: those directly first and only fall back to the launcher if neither is found.
+set PY_CMD=
+if exist "%LocalAppData%\Programs\Python\Python312\python.exe" set PY_CMD="%LocalAppData%\Programs\Python\Python312\python.exe"
+if not defined PY_CMD if exist "%ProgramFiles%\Python312\python.exe" set PY_CMD="%ProgramFiles%\Python312\python.exe"
+if not defined PY_CMD set PY_CMD=py -3.12
+
+!PY_CMD! --version >nul 2>&1
 if errorlevel 1 (
     echo ERROR: Python 3.12 not found.
-    echo        Install it with: winget install -e --id Python.Python.3.12
+    echo        Install it with: winget install -e --id Python.Python.3.12 --architecture x64
     exit /b 1
 )
 
-:: ── Detect NVIDIA GPU / CUDA (pass --cuda or --cpu to override) ──────────────
+:: -- Reject an ARM64 Python interpreter ----------------------------------------
+:: torch has had native win_arm64 wheels since 2.7.0, but torchaudio (also
+:: required here) has never published win_arm64 wheels - only win_amd64. An
+:: ARM64 Python interpreter can therefore never satisfy our pinned dependencies;
+:: pip would fail deep into the install with a cryptic "No matching distribution
+:: found for torch==2.5.1". Catch it here instead, before that happens.
+for /f "delims=" %%i in ('!PY_CMD! -c "import platform; print(platform.machine())" 2^>nul') do set PY_ARCH=%%i
+if /i "!PY_ARCH!"=="ARM64" (
+    echo ERROR: The Python 3.12 found ^(!PY_CMD!^) is the ARM64 build - torchaudio has
+    echo        no win_arm64 wheels, so this venv can never install successfully on it.
+    echo.
+    echo        If you already installed the x64 build too, both may now be registered
+    echo        and "py -3.12" is ambiguous about which one it picks. Run "py -0p" to
+    echo        see every registered interpreter and its path. winget's uninstall
+    echo        command does not reliably support --architecture to remove just one, so
+    echo        remove the ARM64 one via Settings ^> Apps ^> Installed apps instead
+    echo        ^(search "Python 3.12"^), then reinstall cleanly:
+    echo          winget install -e --id Python.Python.3.12 --architecture x64
+    echo        Then delete any existing venv ^(scripts\uninstall.bat^) and re-run this script.
+    exit /b 1
+)
+
+:: -- Detect NVIDIA GPU / CUDA (pass --cuda or --cpu to override) --------------
 set MODE=cpu
 if /i "%~1"=="--cuda" set MODE=cuda
 if /i "%~1"=="--cpu"  set MODE=cpu
@@ -78,9 +112,9 @@ if "%~1"=="" (
 )
 
 if "!MODE!"=="cuda" (
-    echo  Hardware       : NVIDIA GPU detected ^(nvidia-smi^) — installing CUDA build
+    echo  Hardware       : NVIDIA GPU detected ^(nvidia-smi^) - installing CUDA build
 ) else (
-    echo  Hardware       : No CUDA GPU detected — installing CPU build
+    echo  Hardware       : No CUDA GPU detected - installing CPU build
     echo                   ^(pass --cuda to force the CUDA build, e.g. after a driver install^)
 )
 echo.
@@ -92,7 +126,7 @@ winget install -e --id !FFMPEG_PKG!
 if errorlevel 1 ( echo ERROR: Failed to install FFmpeg. Make sure winget is available. & exit /b 1 )
 
 echo [2/7] Creating virtual environment "rb.video.translator" in working folder...
-py -3.12 -m venv "!VENV_PATH!"
+!PY_CMD! -m venv "!VENV_PATH!"
 if errorlevel 1 ( echo ERROR: Failed to create virtual environment. & exit /b 1 )
 
 echo [3/7] Activating environment...
@@ -104,7 +138,7 @@ python -m pip install --upgrade pip --quiet
 
 echo [5/7] Installing PyTorch 2.5.1 ^(!MODE!^) + Demucs...
 echo        ^(This can take several minutes - PyTorch is a large download^)
-echo        ^(Pinned to 2.5.1 — 2.6+ requires torchcodec which has no Windows build^)
+echo        ^(Pinned to 2.5.1 - 2.6+ requires torchcodec which has no Windows build^)
 set TORCH_PKGS=
 for /f "delims=" %%i in ('powershell -NoProfile -Command ^
     "(Get-Content '%DEPSFILE%' -Raw | ConvertFrom-Json).!MODE!.torch -join ' ' "') do set TORCH_PKGS=%%i
@@ -120,17 +154,17 @@ if errorlevel 1 ( echo ERROR: Failed to install Demucs. & exit /b 1 )
 
 echo        Patching torchaudio to fall back to soundfile ^(no torchcodec build for Windows^)...
 python "%~dp0patch_torchaudio.py"
-if errorlevel 1 echo        WARNING: torchaudio patch did not apply — continuing anyway.
+if errorlevel 1 echo        WARNING: torchaudio patch did not apply - continuing anyway.
 
 echo [6/7] Installing WhisperX ^(transcription + speaker diarization^)...
-echo        ^(whisperx pinned to 3.4.2, pyannote-audio to 3.4.0, speechbrain to 1.0.3 —
+echo        ^(whisperx pinned to 3.4.2, pyannote-audio to 3.4.0, speechbrain to 1.0.3 -
 echo        see scripts\dependencies.json "commonNotes" for why^)
 set COMMON_PKGS=
 for /f "delims=" %%i in ('powershell -NoProfile -Command ^
     "(Get-Content '%DEPSFILE%' -Raw | ConvertFrom-Json).common -join ' ' "') do set COMMON_PKGS=%%i
 
 if "!MODE!"=="cuda" (
-    echo        ^(+ CUDA runtime libs: nvidia-cublas-cu12, nvidia-cudnn-cu12 — see
+    echo        ^(+ CUDA runtime libs: nvidia-cublas-cu12, nvidia-cudnn-cu12 - see
     echo        scripts\dependencies.json "cuda.notes" for why^)
     set EXTRA_PKGS=
     for /f "delims=" %%i in ('powershell -NoProfile -Command ^
@@ -144,21 +178,21 @@ if errorlevel 1 ( echo ERROR: Failed to install WhisperX. & exit /b 1 )
 echo [7/7] Caching HuggingFace token for speaker diarization...
 if not "!HF_TOKEN_VALUE!"=="" (
     :: huggingface-cli is deprecated in favour of `hf`, and its deprecation-notice
-    :: emoji crashes with UnicodeEncodeError on the default cp1252 console — force UTF-8.
+    :: emoji crashes with UnicodeEncodeError on the default cp1252 console - force UTF-8.
     set PYTHONUTF8=1
     hf auth login --token "!HF_TOKEN_VALUE!"
-    if errorlevel 1 ( echo WARNING: HuggingFace login failed — check the token in appsettings.json. ) else ( echo  HuggingFace token cached. )
+    if errorlevel 1 ( echo WARNING: HuggingFace login failed - check the token in appsettings.json. ) else ( echo  HuggingFace token cached. )
 ) else (
-    echo        Skipped — RBVideoTranslator.HfToken is empty in appsettings.json.
+    echo        Skipped - RBVideoTranslator.HfToken is empty in appsettings.json.
     echo        Set it and re-run this script, or set the HF_TOKEN env var manually.
 )
 
-:: ── Write VenvPath back to appsettings.json ───────────────────────────────────
+:: -- Write VenvPath back to appsettings.json -----------------------------------
 echo.
 echo  Updating VenvPath in appsettings.json...
 powershell -NoProfile -Command ^
     "$f = '%APPSETTINGS%'; $j = Get-Content $f -Raw | ConvertFrom-Json; $j.RBVideoTranslator.VenvPath = '!VENV_PATH!'; $j | ConvertTo-Json -Depth 10 | Set-Content $f -Encoding UTF8"
-if errorlevel 1 ( echo WARNING: Could not update VenvPath in appsettings.json — set it manually. ) else ( echo  VenvPath updated. )
+if errorlevel 1 ( echo WARNING: Could not update VenvPath in appsettings.json - set it manually. ) else ( echo  VenvPath updated. )
 
 echo.
 echo ============================================================
@@ -175,7 +209,7 @@ echo    ffmpeg -version
 echo.
 if "!MODE!"=="cuda" (
     echo  NOTE: cu124 requires CUDA 12.4+ drivers ^(Game Ready 550+ / Studio 555+^).
-    echo        Runs fine on newer hardware ^(12.6, 12.8^) — CUDA is backward-compatible.
+    echo        Runs fine on newer hardware ^(12.6, 12.8^) - CUDA is backward-compatible.
     echo        For older drivers visit https://pytorch.org/get-started/locally/
     echo        to get the correct --index-url for your driver version.
     echo.
