@@ -192,6 +192,32 @@ else
     pip install $COMMON_PKGS
 fi
 
+# ctranslate2 (whisperx's transcription backend) ships a prebuilt .so with an
+# executable-stack ELF flag. glibc 2.41+ (Ubuntu 24.10+, other rolling distros)
+# refuses to mmap that and transcription fails with "cannot enable executable
+# stack as shared object requires: Invalid argument". Clearing the flag with
+# patchelf is the fix — upgrading ctranslate2 isn't an option since whisperx
+# 3.4.2 pins it <4.5.0 (see commonNotes above). https://github.com/OpenNMT/CTranslate2/issues/1849
+if [ "$OS_NAME" = "Linux" ]; then
+    echo "       Patching ctranslate2 shared libraries (executable-stack glibc 2.41+ issue)..."
+    if ! command -v patchelf >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
+        sudo apt-get install -y patchelf || true
+    fi
+    if command -v patchelf >/dev/null 2>&1; then
+        found=0
+        while IFS= read -r -d '' so; do
+            patchelf --clear-execstack "$so" && echo "         cleared: $so"
+            found=1
+        done < <(find "$VENV_PATH/lib" -iname 'libctranslate2*.so*' -print0 2>/dev/null)
+        [ "$found" = "1" ] || echo "         (no libctranslate2*.so* found — nothing to patch)"
+    else
+        echo "       WARNING: patchelf not found and could not be installed automatically."
+        echo "         If transcription fails with 'cannot enable executable stack', run:"
+        echo "           sudo apt install patchelf"
+        echo "           find \"$VENV_PATH\" -iname 'libctranslate2*.so*' -exec patchelf --clear-execstack {} \\;"
+    fi
+fi
+
 # ── [7/7] HuggingFace token ───────────────────────────────────────────────────
 echo "[7/7] Caching HuggingFace token for speaker diarization..."
 if [ -n "$HF_TOKEN_VALUE" ]; then
