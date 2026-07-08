@@ -111,4 +111,26 @@ public sealed class VttExtractorServiceTests
         await Assert.ThrowsAsync<InvalidOperationException>(
             () => _sut.ExtractAsync(MakeJob()));
     }
+
+    [Fact]
+    public async Task ExtractAsync_OmitsNoVoiceMarksFlagByDefault()
+    {
+        await _sut.ExtractAsync(MakeJob());
+
+        await _processRunner.Received(1).RunAsync(
+            Arg.Any<string>(),
+            Arg.Is<string>(a => !a.Contains("--no-voice-marks")),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task ExtractAsync_PassesNoVoiceMarksFlagWhenDisabled()
+    {
+        await _sut.ExtractAsync(MakeJob(), "python", enableVoiceMarks: false);
+
+        await _processRunner.Received(1).RunAsync(
+            Arg.Any<string>(),
+            Arg.Is<string>(a => a.Contains("--no-voice-marks")),
+            Arg.Any<CancellationToken>());
+    }
 }

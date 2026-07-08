@@ -59,6 +59,7 @@ dotnet pack RB.VideoTranslator.Core\RB.VideoTranslator.Core.csproj --output nupk
     "FfmpegPath": "ffmpeg",
     "PythonPath": "python",
     "DemucsPath": "python",
+    "HfToken": "",
     "AzureSubscriptionKey": "<your-key>",
     "AzureEndpointUrl": "https://<resource>.cognitiveservices.azure.com/",
     "AzureOpenAiEndpoint": "https://<resource>.services.ai.azure.com/",
@@ -74,6 +75,7 @@ dotnet pack RB.VideoTranslator.Core\RB.VideoTranslator.Core.csproj --output nupk
 |-------|----------|-------|
 | `WorkingFolderPath` | **yes** | Root folder; `input`, `processing`, `output` subfolders are created automatically. The CLI always runs with this as its working directory. |
 | `VenvPath` | auto | Filled in automatically by the install script (`<WorkingFolderPath>\rb.video.translator`). Leave empty before first run. |
+| `HfToken` | | HuggingFace token for speaker diarization + gender-estimate comments in the VTT. See [HuggingFace token setup](how-to-start.md#huggingface-speaker-diarization). Leave empty to skip diarization (plain transcription still works). |
 | `AzureSubscriptionKey` | **yes** | Azure Cognitive Services key — used for both Speech TTS and OpenAI. |
 | `AzureEndpointUrl` | **yes** | Azure Speech endpoint URL. |
 | `AzureOpenAiEndpoint` | **yes** | Azure AI Services root URL (no `/openai/v1` suffix). |
@@ -86,35 +88,60 @@ All values can be overridden at run-time with CLI arguments (see [All options](#
 
 ## 2. Run the install script
 
-From the repository root, choose the script that matches your hardware:
+From the repository root, run the script for your OS. Both scripts **auto-detect NVIDIA/CUDA hardware** (`nvidia-smi`) and install the matching PyTorch build — no need to choose manually. Pass `--cuda` or `--cpu` to force a build regardless of what's detected (e.g. right after installing/removing a GPU driver).
 
-| Script | When to use |
-|--------|-------------|
-| `scripts\install-cuda.bat` | NVIDIA GPU — installs PyTorch 2.5.1 with CUDA 12.4 (5–10× faster) |
-| `scripts\install-cpu.bat`  | No GPU — installs CPU-only PyTorch 2.5.1 |
+| Platform | Script |
+|----------|--------|
+| Windows | `scripts\install.bat` |
+| Linux / macOS | `scripts/install.sh` |
+
+```bat
+:: Windows
+scripts\install.bat            REM auto-detect
+scripts\install.bat --cuda     REM force CUDA build
+scripts\install.bat --cpu      REM force CPU build
+```
+
+```bash
+# Linux / macOS
+scripts/install.sh             # auto-detect
+scripts/install.sh --cuda      # force CUDA build (Linux only — macOS has no CUDA)
+scripts/install.sh --cpu       # force CPU build
+```
+
+Package versions and pinning rationale live in one place: `scripts/dependencies.json`. Both scripts read from it, so there's a single source of truth instead of duplicated pins.
 
 The script will:
 1. Read `WorkingFolderPath` from `appsettings.json`
 2. Create the `input`, `processing`, `output` subfolders
-3. Install ffmpeg via winget
-4. Create a Python 3.12 virtual environment at `<WorkingFolderPath>\rb.video.translator`
-5. Install PyTorch, Demucs, faster-whisper (and CUDA runtime libs if CUDA)
-6. Write `VenvPath` back into `appsettings.json` automatically
+3. Install ffmpeg (winget on Windows, Homebrew on macOS, apt on Linux)
+4. Create a Python 3.12 virtual environment at `<WorkingFolderPath>/rb.video.translator`
+5. Install PyTorch, Demucs, WhisperX + librosa (and CUDA runtime libs if CUDA)
+6. Cache the `HfToken` login for speaker diarization, if set
+7. Write `VenvPath` back into `appsettings.json` automatically
 
 After this step `appsettings.json` will have `VenvPath` filled and no further CLI flags are needed.
+
+To remove the environment later: `scripts\uninstall.bat` (Windows) or `scripts/uninstall.sh` (Linux/macOS).
 
 ---
 
 ## 3. Build and run
 
-```bat
+```bash
 dotnet build --configuration Release
 ```
 
-Place video files (`.mp4`, `.mkv`, `.avi`, `.mov`, `.webm`) in `<WorkingFolderPath>\input`, then run:
+Place video files (`.mp4`, `.mkv`, `.avi`, `.mov`, `.webm`) in `<WorkingFolderPath>/input`, then run:
 
 ```bat
+:: Windows
 RB.VideoTranslator.CLI\bin\Release\net10.0\RB.VideoTranslator.CLI.exe
+```
+
+```bash
+# Linux / macOS
+dotnet RB.VideoTranslator.CLI/bin/Release/net10.0/RB.VideoTranslator.CLI.dll
 ```
 
 No CLI arguments are required when `appsettings.json` is fully configured.
@@ -130,7 +157,9 @@ WorkingFolderPath\input
 [SeparatingMedia]       ffmpeg — extract audio WAV + produce silent MP4
     │
     ▼
-[ExtractingVtt]         Whisper — transcribe audio → WebVTT subtitle file
+[ExtractingVtt]         WhisperX — transcribe audio → WebVTT subtitle file
+                         • Speaker diarization + pitch-based gender estimate,
+                           written as `NOTE` comments above each cue (needs `HfToken`)
     │
     ▼
 [RemovingVoice]         Demucs htdemucs — separate vocals from music bed → no_vocals.flac
@@ -182,7 +211,7 @@ Completed  ✓
 |---------|---------|
 | `JobService` | Move file to processing folder, create job record, transition states |
 | `MediaSeparatorService` | ffmpeg — extract audio + produce silent video |
-| `VttExtractorService` | Whisper — transcribe audio to VTT |
+| `VttExtractorService` | WhisperX — transcribe audio to VTT, with speaker diarization + gender-estimate `NOTE` comments |
 | `VoiceRemoverService` | Demucs — separate vocals from music bed |
 | `VttTranslatorService` | GPT-4o-mini — translate VTT to target language |
 | `VttToAzureTtsService` | Azure TTS — synthesise WAV from translated VTT |
@@ -210,6 +239,7 @@ Every option can come from `appsettings.json` (preferred) or be overridden on th
 | `--ffmpeg` | `FfmpegPath` | `ffmpeg` | ffmpeg executable |
 | `--python` | `PythonPath` | `python` | Python executable (Whisper) |
 | `--demucs` | `DemucsPath` | `python` | Python executable (Demucs) |
+| *(none)* | `HfToken` | *(empty)* | HuggingFace token for speaker diarization; install-time only, cached into the venv's HF login — see [setup guide](how-to-start.md#huggingface-speaker-diarization) |
 | `--openai-deployment` | `AzureOpenAiDeployment` | `gpt-4o-mini` | Azure OpenAI deployment name |
 | `--target-lang` | `TranslationTargetLanguages` | `Bulgarian` | Comma-separated target languages |
 | `--female` | `UseFemaleVoice` | `false` | Use female Azure TTS voice |

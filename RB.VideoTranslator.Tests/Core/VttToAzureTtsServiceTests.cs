@@ -221,6 +221,54 @@ public sealed class VttToAzureTtsServiceTests
             "en-US-Ava:DragonHDLatestNeural", Arg.Any<CancellationToken>());
     }
 
+    // ── Per-speaker voice assignment ──────────────────────────────────────────
+
+    [Fact]
+    public async Task SynthesiseAsync_UsesPerSpeakerVoiceWhenAssigned()
+    {
+        var sut = MakeSut(out _, out _, out var engine, vttContent: SampleVttWithPerCueNotes);
+        var speakerVoices = new Dictionary<string, string>
+        {
+            ["Speaker1"] = "VoiceForSpeaker1",
+            ["Speaker2"] = "VoiceForSpeaker2",
+        };
+
+        await sut.SynthesiseAsync(MakeJob(), "key", "https://ep/", "DefaultVoice", "en-US", speakerVoices);
+
+        await engine.Received(1).SpeakSsmlAsync(
+            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), "VoiceForSpeaker1", Arg.Any<CancellationToken>());
+        await engine.Received(1).SpeakSsmlAsync(
+            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), "VoiceForSpeaker2", Arg.Any<CancellationToken>());
+        await engine.DidNotReceive().SpeakSsmlAsync(
+            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), "DefaultVoice", Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task SynthesiseAsync_FallsBackToDefaultVoiceWhenSpeakerNotInMap()
+    {
+        var sut = MakeSut(out _, out _, out var engine, vttContent: SampleVttWithPerCueNotes);
+        var speakerVoices = new Dictionary<string, string> { ["Speaker1"] = "VoiceForSpeaker1" }; // Speaker2 missing
+
+        await sut.SynthesiseAsync(MakeJob(), "key", "https://ep/", "DefaultVoice", "en-US", speakerVoices);
+
+        await engine.Received(1).SpeakSsmlAsync(
+            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), "VoiceForSpeaker1", Arg.Any<CancellationToken>());
+        await engine.Received(1).SpeakSsmlAsync(
+            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), "DefaultVoice", Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task SynthesiseAsync_UsesDefaultVoiceForEveryEntryWhenSpeakerVoicesIsNull()
+    {
+        // No diarization data (SampleVtt has no per-cue notes) — behaviour must match today.
+        var sut = MakeSut(out _, out _, out var engine, vttContent: SampleVtt);
+
+        await sut.SynthesiseAsync(MakeJob(), "key", "https://ep/", "DefaultVoice", "en-US", speakerVoices: null);
+
+        await engine.Received(2).SpeakSsmlAsync(
+            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), "DefaultVoice", Arg.Any<CancellationToken>());
+    }
+
     // ── Error handling ────────────────────────────────────────────────────────
 
     // The retry logic substitutes silence for any entry whose TTS call fails after
@@ -393,6 +441,62 @@ public sealed class VttToAzureTtsServiceTests
         var entries = VttToAzureTtsService.ParseVtt(vtt);
         Assert.Single(entries);
         Assert.Equal("Hello", entries[0].Text);
+    }
+
+    // ── ParseVtt per-cue speaker NOTE tests ────────────────────────────────────
+
+    private const string SampleVttWithPerCueNotes = """
+        WEBVTT
+
+        NOTE Speaker1 (estimated: female)
+
+        1
+        00:00:01.000 --> 00:00:03.000
+        Hello world
+
+        NOTE Speaker2 (estimated: male)
+
+        2
+        00:00:05.000 --> 00:00:07.000
+        Goodbye world
+        """;
+
+    [Fact]
+    public void ParseVtt_AttachesSpeakerLabelFromPrecedingNote()
+    {
+        var entries = VttToAzureTtsService.ParseVtt(SampleVttWithPerCueNotes);
+
+        Assert.Equal(2, entries.Count);
+        Assert.Equal("Speaker1", entries[0].Speaker);
+        Assert.Equal("Speaker2", entries[1].Speaker);
+    }
+
+    [Fact]
+    public void ParseVtt_SpeakerIsNullWhenNoPrecedingNote()
+    {
+        var entries = VttToAzureTtsService.ParseVtt(SampleVtt);
+        Assert.All(entries, e => Assert.Null(e.Speaker));
+    }
+
+    [Fact]
+    public void ParseVtt_DoesNotTreatLeadingMultiLineSummaryAsASpeakerLabel()
+    {
+        const string vtt = """
+            WEBVTT
+
+            NOTE
+            The conversation contains 1 speaker.
+            Speaker1|Female|00:00:01|00:00:03|210Hz
+
+            1
+            00:00:01.000 --> 00:00:03.000
+            Hello world
+            """;
+
+        var entries = VttToAzureTtsService.ParseVtt(vtt);
+
+        Assert.Single(entries);
+        Assert.Null(entries[0].Speaker);
     }
 
     // ── BuildSsml unit tests ──────────────────────────────────────────────────

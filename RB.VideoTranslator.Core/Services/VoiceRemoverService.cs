@@ -34,6 +34,7 @@ public sealed class VoiceRemoverService : IVoiceRemoverService
         var demucsOutDir = Path.Combine(job.ProcessingFolderPath, "demucs");
         var audioBaseName = Path.GetFileNameWithoutExtension(job.ExtractedAudioPath);
         var noVocalsPath = Path.Combine(demucsOutDir, DemucsModel, audioBaseName, "no_vocals.flac");
+        var vocalsPath = Path.Combine(demucsOutDir, DemucsModel, audioBaseName, "vocals.flac");
 
         await ValidateCudaAsync(demucsPath, ct);
 
@@ -47,12 +48,15 @@ public sealed class VoiceRemoverService : IVoiceRemoverService
             ct);
         if (!_fs.FileExists(noVocalsPath))
             throw new FileNotFoundException($"Demucs did not produce expected output: {noVocalsPath}");
+        if (!_fs.FileExists(vocalsPath))
+            throw new FileNotFoundException($"Demucs did not produce expected output: {vocalsPath}");
 
         job.VoiceRemovedAudioPath = noVocalsPath;
+        job.VocalsAudioPath = vocalsPath;
         job.State = JobState.VoiceRemoved;
         await _repo.UpdateAsync(job, ct);
 
-        _logger.LogInformation("Music bed written to {NoVocals}", noVocalsPath);
+        _logger.LogInformation("Music bed written to {NoVocals}, isolated vocals written to {Vocals}", noVocalsPath, vocalsPath);
     }
 
     private async Task ValidateCudaAsync(string pythonPath, CancellationToken ct)

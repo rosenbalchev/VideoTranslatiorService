@@ -1,0 +1,6 @@
+# Shell scripts must keep LF endings — a CRLF shebang line breaks
+# execution on Linux/macOS ("bad interpreter: ... ^M: no such file").
+*.sh text eol=lf
+
+# Windows batch files are conventionally CRLF.
+*.bat text eol=crlf

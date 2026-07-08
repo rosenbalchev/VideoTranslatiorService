@@ -50,6 +50,7 @@ public sealed class VttToAzureTtsService : IVttToAzureTtsService
         string endpointUrl,
         string voiceName = "en-US-Ava:DragonHDLatestNeural",
         string lang = "en-US",
+        IReadOnlyDictionary<string, string>? speakerVoices = null,
         CancellationToken ct = default)
     {
         if (string.IsNullOrEmpty(job.TranslatedVttFilePath))
@@ -65,7 +66,9 @@ public sealed class VttToAzureTtsService : IVttToAzureTtsService
         // (e.g. "video_translated_Bulgarian_azure_tts.wav" vs "video_translated_German_azure_tts.wav").
         var baseName = Path.GetFileNameWithoutExtension(job.TranslatedVttFilePath);
 
-        // Write full SSML to disk for inspection (includes all breaks, even large ones)
+        // Write full SSML to disk for inspection (includes all breaks, even large ones).
+        // Deliberately single-voice even when speakerVoices is set — this file is a debug
+        // artifact only, never used for actual synthesis (see SynthesisePerEntryAsync).
         var fullSsml = BuildSsml(entries, voiceName, lang);
         var ssmlPath = Path.Combine(job.ProcessingFolderPath, $"{baseName}_azure_tts.ssml");
         await _fs.WriteAllTextAsync(ssmlPath, fullSsml, ct);
@@ -86,7 +89,7 @@ public sealed class VttToAzureTtsService : IVttToAzureTtsService
         // absolute original timestamp so the audio track aligns with the source video.
         // The translated VTT is NOT rewritten — subtitle display times are kept identical
         // to the original so all language tracks share the same visual timing.
-        var audioData = await SynthesisePerEntryAsync(entries, endpointUrl, subscriptionKey, voiceName, lang, charsPerSecond, job.AudioChannels, ct);
+        var audioData = await SynthesisePerEntryAsync(entries, endpointUrl, subscriptionKey, voiceName, lang, charsPerSecond, job.AudioChannels, speakerVoices, ct);
 
         var outputWav = Path.Combine(job.ProcessingFolderPath, $"{baseName}_azure_tts.wav");
         await using var fileStream = _fs.Create(outputWav);
@@ -107,6 +110,18 @@ public sealed class VttToAzureTtsService : IVttToAzureTtsService
 
     private const int MaxTtsRetries = 3;
 
+    // Extra attempts made when synthesised audio overruns its subtitle window. Each retry
+    // recalculates the prosody rate from the actual overrun ratio (measured audio duration,
+    // not the pre-synthesis chars/sec estimate), so it converges on the real window fit.
+    private const int MaxOverrunRetries = 2;
+
+    // Retries are allowed to push the rate past MaxRatePct — that cap governs the
+    // pre-synthesis estimate, whereas here we're correcting a measured overrun.
+    private const double MaxOverrunRetryRatePct = 200.0;
+
+    // Overrun below this is not worth a re-synthesis round-trip.
+    private const int OverrunToleranceMs = 100;
+
     private async Task<byte[]> SynthesisePerEntryAsync(
         IReadOnlyList<VttEntry> entries,
         string endpointUrl,
@@ -115,6 +130,7 @@ public sealed class VttToAzureTtsService : IVttToAzureTtsService
         string lang,
         double charsPerSecond,
         int inputAudioChannels,
+        IReadOnlyDictionary<string, string>? speakerVoices,
         CancellationToken ct)
     {
         _logger.LogInformation("Synthesising {Count} entries one-by-one for precise sync", entries.Count);
@@ -134,11 +150,20 @@ public sealed class VttToAzureTtsService : IVttToAzureTtsService
             var entry      = entries[i];
             var expectedMs = entry.EndMs - entry.StartMs;
             var rate       = SpeechRateFor(entry.Text, expectedMs, charsPerSecond);
-            var ssml       = BuildEntrySsml(entry.Text, voiceName, lang, rate);
+
+            // Use this entry's assigned per-speaker voice when one exists, otherwise the
+            // single default voice (also the behaviour when diarization produced no header).
+            var entryVoice = entry.Speaker is not null
+                && speakerVoices is not null
+                && speakerVoices.TryGetValue(entry.Speaker, out var mappedVoice)
+                    ? mappedVoice
+                    : voiceName;
+
+            var ssml = BuildEntrySsml(entry.Text, entryVoice, lang, rate);
 
             _logger.LogInformation(
-                "TTS entry {I}/{Total} [{Start}→{End}ms] rate={Rate:F0}%",
-                i + 1, entries.Count, entry.StartMs, entry.EndMs, rate);
+                "TTS entry {I}/{Total} [{Start}→{End}ms] voice={Voice} rate={Rate:F0}%",
+                i + 1, entries.Count, entry.StartMs, entry.EndMs, entryVoice, rate);
 
             // Retry on transient Azure SDK timeouts (frame-interval watchdog fires ~3 000ms).
             SpeechAudioResult? result = null;
@@ -146,7 +171,7 @@ public sealed class VttToAzureTtsService : IVttToAzureTtsService
             {
                 try
                 {
-                    result = await _engine.SpeakSsmlAsync(ssml, endpointUrl, subscriptionKey, voiceName, ct);
+                    result = await _engine.SpeakSsmlAsync(ssml, endpointUrl, subscriptionKey, entryVoice, ct);
                     break;
                 }
                 catch (OperationCanceledException) { throw; }
@@ -165,6 +190,43 @@ public sealed class VttToAzureTtsService : IVttToAzureTtsService
                             "Entry {I}/{Total} TTS attempt {Attempt}/{Max} failed ({Msg}) — retrying in {Delay}ms",
                             i + 1, entries.Count, attempt, MaxTtsRetries, ex.Message, delayMs);
                         await Task.Delay(delayMs, ct);
+                    }
+                }
+            }
+
+            // If the synthesised audio overruns its subtitle window, recalculate the prosody
+            // rate from the actual overrun ratio and re-synthesise so the audio matches the
+            // window. An underrun is left alone — Phase 2 pads it with trailing silence.
+            if (result is not null && expectedMs > 0)
+            {
+                for (int overrunAttempt = 1; overrunAttempt <= MaxOverrunRetries; overrunAttempt++)
+                {
+                    var actualMs = result.DurationMs;
+                    if (actualMs <= expectedMs + OverrunToleranceMs)
+                        break;
+
+                    var newRate = Math.Min(rate * actualMs / expectedMs, MaxOverrunRetryRatePct);
+                    if (newRate <= rate)
+                        break; // already at the retry ceiling — retrying again won't help
+
+                    _logger.LogInformation(
+                        "Entry {I}/{Total} overran its window ({Actual}ms > {Expected}ms) at rate={Rate:F0}% — " +
+                        "retrying {Attempt}/{Max} at rate={NewRate:F0}%",
+                        i + 1, entries.Count, actualMs, expectedMs, rate, overrunAttempt, MaxOverrunRetries, newRate);
+
+                    rate = newRate;
+                    var retrySsml = BuildEntrySsml(entry.Text, entryVoice, lang, rate);
+                    try
+                    {
+                        result = await _engine.SpeakSsmlAsync(retrySsml, endpointUrl, subscriptionKey, entryVoice, ct);
+                    }
+                    catch (OperationCanceledException) { throw; }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(
+                            "Entry {I}/{Total} overrun retry {Attempt}/{Max} failed ({Msg}) — keeping previous audio",
+                            i + 1, entries.Count, overrunAttempt, MaxOverrunRetries, ex.Message);
+                        break;
                     }
                 }
             }
@@ -221,9 +283,9 @@ public sealed class VttToAzureTtsService : IVttToAzureTtsService
                 {
                     spokenMs = actualMs;
 
-                    if (actualMs > expectedMs + 100)
+                    if (actualMs > expectedMs + OverrunToleranceMs)
                         _logger.LogWarning(
-                            "Entry {I}/{Total} TTS audio ({Actual}ms) overran its window ({Expected}ms) by {Over}ms",
+                            "Entry {I}/{Total} TTS audio ({Actual}ms) still overran its window ({Expected}ms) by {Over}ms after retries",
                             i + 1, entries.Count, actualMs, expectedMs, actualMs - expectedMs);
                 }
             }
@@ -290,8 +352,8 @@ public sealed class VttToAzureTtsService : IVttToAzureTtsService
     // Default speaking rate applied to all normal entries — slightly slower than the
     // neural voice's natural pace to give the listener comfortable time to follow.
     // Only raised above this when text would genuinely overflow its subtitle window.
-    public const double DefaultRatePct = 130.0;
-    public const double MaxRatePct     = 130.0;
+    public const double DefaultRatePct = 120.0;
+    public const double MaxRatePct     = 120.0;
 
     internal static string BuildSsml(
         IReadOnlyList<VttEntry> entries,
@@ -360,16 +422,31 @@ public sealed class VttToAzureTtsService : IVttToAzureTtsService
         var entries = new List<VttEntry>();
         var blocks  = Regex.Split(content.Replace("\r\n", "\n").Trim(), @"\n\s*\n");
 
+        // Must run BEFORE the `lines.Length < 2` guard below — a per-cue NOTE block
+        // ("NOTE Speaker1 (estimated: female)") is a single physical line, so it would
+        // otherwise be silently dropped by that guard before ever reaching this check
+        // (mirrors SpeakerSampleExtractorService.ParseCuesBySpeaker's ordering).
+        string? pendingSpeaker = null;
         foreach (var block in blocks)
         {
+            var trimmedBlock = block.Trim();
+
+            if (trimmedBlock.StartsWith("NOTE", StringComparison.Ordinal))
+            {
+                // Only a single-line note is a per-cue speaker label; the multi-line
+                // summary header (if translation preserved it) is not one.
+                pendingSpeaker = trimmedBlock.Contains('\n') ? null : ExtractSpeakerLabel(trimmedBlock);
+                continue;
+            }
+
             var lines = block.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-            if (lines.Length < 2) continue;
+            if (lines.Length < 2) { pendingSpeaker = null; continue; }
 
             var timeLine = Array.Find(lines, l => l.Contains("-->"));
-            if (timeLine is null) continue;
+            if (timeLine is null) { pendingSpeaker = null; continue; }
 
             var m = TimeLineRx.Match(timeLine);
-            if (!m.Success) continue;
+            if (!m.Success) { pendingSpeaker = null; continue; }
 
             var startMs = ToMs(m.Groups[1].Value, m.Groups[2].Value, m.Groups[3].Value, m.Groups[4].Value);
             var endMs   = ToMs(m.Groups[5].Value, m.Groups[6].Value, m.Groups[7].Value, m.Groups[8].Value);
@@ -381,10 +458,22 @@ public sealed class VttToAzureTtsService : IVttToAzureTtsService
             text = Regex.Replace(text, @"\s+", " ").Trim();
 
             if (!string.IsNullOrEmpty(text))
-                entries.Add(new VttEntry(startMs, endMs, text));
+                entries.Add(new VttEntry(startMs, endMs, text, pendingSpeaker));
+
+            pendingSpeaker = null; // each label note pairs with exactly one following cue
         }
 
         return entries;
+    }
+
+    // Extracts the speaker label from a single-line note like "NOTE Speaker1 (estimated:
+    // female)" — i.e. everything between "NOTE " and the next space. Returns null for
+    // malformed input (no space found).
+    private static string? ExtractSpeakerLabel(string singleLineNote)
+    {
+        var afterNote = singleLineNote["NOTE".Length..].Trim();
+        var spaceIdx = afterNote.IndexOf(' ');
+        return spaceIdx > 0 ? afterNote[..spaceIdx] : null;
     }
 
     // ── WAV utilities ─────────────────────────────────────────────────────────
@@ -521,4 +610,4 @@ public sealed class VttToAzureTtsService : IVttToAzureTtsService
             .Replace(">", "&gt;");
 }
 
-internal sealed record VttEntry(int StartMs, int EndMs, string Text);
+internal sealed record VttEntry(int StartMs, int EndMs, string Text, string? Speaker = null);

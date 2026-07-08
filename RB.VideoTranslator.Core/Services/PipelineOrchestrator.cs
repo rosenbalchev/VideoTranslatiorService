@@ -17,10 +17,12 @@ public sealed class PipelineOrchestrator : IPipelineOrchestrator
     private readonly IMediaSeparatorService _mediaSeparator;
     private readonly IVttExtractorService _vttExtractor;
     private readonly IVoiceRemoverService _voiceRemover;
+    private readonly ISpeakerSampleExtractorService _speakerSampleExtractor;
     private readonly IVttTranslatorService _vttTranslator;
     private readonly IVttToAzureTtsService _azureTts;
     private readonly IAudioMixerService _audioMixer;
     private readonly IVideoMuxerService _videoMuxer;
+    private readonly IFileSystem _fs;
     private readonly IOptions<PipelineOptions> _options;
     private readonly ILogger<PipelineOrchestrator> _logger;
 
@@ -30,10 +32,12 @@ public sealed class PipelineOrchestrator : IPipelineOrchestrator
         IMediaSeparatorService mediaSeparator,
         IVttExtractorService vttExtractor,
         IVoiceRemoverService voiceRemover,
+        ISpeakerSampleExtractorService speakerSampleExtractor,
         IVttTranslatorService vttTranslator,
         IVttToAzureTtsService azureTts,
         IAudioMixerService audioMixer,
         IVideoMuxerService videoMuxer,
+        IFileSystem fs,
         IOptions<PipelineOptions> options,
         ILogger<PipelineOrchestrator> logger)
     {
@@ -42,46 +46,152 @@ public sealed class PipelineOrchestrator : IPipelineOrchestrator
         _mediaSeparator = mediaSeparator;
         _vttExtractor   = vttExtractor;
         _voiceRemover   = voiceRemover;
+        _speakerSampleExtractor = speakerSampleExtractor;
         _vttTranslator  = vttTranslator;
         _azureTts       = azureTts;
         _audioMixer     = audioMixer;
         _videoMuxer     = videoMuxer;
+        _fs             = fs;
         _options        = options;
         _logger         = logger;
     }
 
-    // Maps display language names (as passed to --target-lang) to Azure TTS voices + BCP-47 tag.
-    // Each entry has a male and female Neural voice. Add entries here to support additional languages.
+    // Maps display language names (as passed to --target-lang) to every broadly-available
+    // standard Azure Neural TTS voice for that locale, grouped by gender, plus the BCP-47 tag.
+    // Add entries here to support additional languages. The FIRST voice in each gender's list
+    // is what gets used today (PipelineOrchestrator picks index 0) — extra voices exist so a
+    // future per-speaker assignment (see SpeakerVoiceAssigner) has distinct options to hand out
+    // when a language has multiple same-gender speakers.
+    // Deliberately excludes "Multilingual", ":MAI-Voice-*", "Turbo", and dialect/regional
+    // variants (e.g. wuu-CN, yue-CN, zh-CN-liaoning-*) — those require preview/limited access
+    // or are a different locale entirely; the voices below work on any standard Speech resource.
     // Voice names sourced from: https://learn.microsoft.com/azure/ai-services/speech-service/language-support?tabs=tts
-    private static readonly Dictionary<string, (string MaleVoice, string FemaleVoice, string Lang)> VoiceMap =
+    private static readonly Dictionary<string, (string[] MaleVoices, string[] FemaleVoices, string Lang)> VoiceMap =
         new(StringComparer.OrdinalIgnoreCase)
         {
-            ["Bulgarian"]  = ("bg-BG-BorislavNeural",  "bg-BG-KalinaNeural",    "bg-BG"),
-            ["Chinese"]    = ("zh-CN-YunxiNeural",     "zh-CN-XiaoxiaoNeural",  "zh-CN"),
-            ["Croatian"]   = ("hr-HR-SreckoNeural",    "hr-HR-GabrijelaNeural", "hr-HR"),
-            ["Czech"]      = ("cs-CZ-AntoninNeural",   "cs-CZ-VlastaNeural",    "cs-CZ"),
-            ["Danish"]     = ("da-DK-JeppeNeural",     "da-DK-ChristelNeural",  "da-DK"),
-            ["Dutch"]      = ("nl-NL-MaartenNeural",   "nl-NL-ColetteNeural",   "nl-NL"),
-            ["English"]    = ("en-US-GuyNeural",       "en-US-AvaNeural",       "en-US"),
-            ["Finnish"]    = ("fi-FI-HarriNeural",     "fi-FI-NooraNeural",     "fi-FI"),
-            ["French"]     = ("fr-FR-HenriNeural",     "fr-FR-DeniseNeural",    "fr-FR"),
-            ["German"]     = ("de-DE-ConradNeural",    "de-DE-KatjaNeural",     "de-DE"),
-            ["Greek"]      = ("el-GR-NestorasNeural",  "el-GR-AthinaNeural",    "el-GR"),
-            ["Hungarian"]  = ("hu-HU-TamasNeural",     "hu-HU-NoemiNeural",     "hu-HU"),
-            ["Italian"]    = ("it-IT-DiegoNeural",     "it-IT-ElsaNeural",      "it-IT"),
-            ["Japanese"]   = ("ja-JP-KeitaNeural",     "ja-JP-NanamiNeural",    "ja-JP"),
-            ["Korean"]     = ("ko-KR-InJoonNeural",    "ko-KR-SunHiNeural",     "ko-KR"),
-            ["Norwegian"]  = ("nb-NO-FinnNeural",      "nb-NO-PernilleNeural",  "nb-NO"),
-            ["Polish"]     = ("pl-PL-MarekNeural",     "pl-PL-ZofiaNeural",     "pl-PL"),
-            ["Portuguese"] = ("pt-BR-AntonioNeural",   "pt-BR-FranciscaNeural", "pt-BR"),
-            ["Romanian"]   = ("ro-RO-EmilNeural",      "ro-RO-AlinaNeural",     "ro-RO"),
-            ["Russian"]    = ("ru-RU-DmitryNeural",    "ru-RU-SvetlanaNeural",  "ru-RU"),
-            ["Slovak"]     = ("sk-SK-LukasNeural",     "sk-SK-ViktoriaNeural",  "sk-SK"),
-            ["Slovenian"]  = ("sl-SI-RokNeural",       "sl-SI-PetraNeural",     "sl-SI"),
-            ["Spanish"]    = ("es-ES-AlvaroNeural",    "es-ES-ElviraNeural",    "es-ES"),
-            ["Swedish"]    = ("sv-SE-MattiasNeural",   "sv-SE-SofieNeural",     "sv-SE"),
-            ["Turkish"]    = ("tr-TR-AhmetNeural",     "tr-TR-EmelNeural",      "tr-TR"),
-            ["Ukrainian"]  = ("uk-UA-OstapNeural",     "uk-UA-PolinaNeural",    "uk-UA"),
+            ["Bulgarian"] = (
+                MaleVoices:   ["bg-BG-BorislavNeural"],
+                FemaleVoices: ["bg-BG-KalinaNeural"],
+                Lang: "bg-BG"),
+            ["Chinese"] = (
+                MaleVoices:   ["zh-CN-YunxiNeural", "zh-CN-XiaoyouNeural", "zh-CN-YunyeNeural", "zh-CN-YunyangNeural"],
+                FemaleVoices: ["zh-CN-XiaoxiaoNeural", "zh-CN-XiaozhenNeural", "zh-CN-YunxiaNeural"],
+                Lang: "zh-CN"),
+            ["Croatian"] = (
+                MaleVoices:   ["hr-HR-SreckoNeural"],
+                FemaleVoices: ["hr-HR-GabrijelaNeural"],
+                Lang: "hr-HR"),
+            ["Czech"] = (
+                MaleVoices:   ["cs-CZ-AntoninNeural"],
+                FemaleVoices: ["cs-CZ-VlastaNeural"],
+                Lang: "cs-CZ"),
+            ["Danish"] = (
+                MaleVoices:   ["da-DK-JeppeNeural"],
+                FemaleVoices: ["da-DK-ChristelNeural"],
+                Lang: "da-DK"),
+            ["Dutch"] = (
+                MaleVoices:   ["nl-NL-MaartenNeural"],
+                FemaleVoices: ["nl-NL-ColetteNeural", "nl-NL-FennaNeural"],
+                Lang: "nl-NL"),
+            ["English"] = (
+                MaleVoices:   ["en-US-GuyNeural", "en-US-AndrewNeural", "en-US-BrianNeural", "en-US-DavisNeural",
+                               "en-US-JasonNeural", "en-US-KaiNeural", "en-US-TonyNeural", "en-US-BrandonNeural",
+                               "en-US-ChristopherNeural", "en-US-EricNeural", "en-US-JacobNeural", "en-US-RogerNeural",
+                               "en-US-SteffanNeural"],
+                FemaleVoices: ["en-US-AvaNeural", "en-US-EmmaNeural", "en-US-JennyNeural", "en-US-AriaNeural",
+                               "en-US-JaneNeural", "en-US-LunaNeural", "en-US-SaraNeural", "en-US-NancyNeural",
+                               "en-US-AmberNeural", "en-US-AnaNeural", "en-US-AshleyNeural", "en-US-CoraNeural",
+                               "en-US-ElizabethNeural", "en-US-MichelleNeural", "en-US-MonicaNeural"],
+                Lang: "en-US"),
+            ["Finnish"] = (
+                MaleVoices:   ["fi-FI-HarriNeural"],
+                FemaleVoices: ["fi-FI-NooraNeural", "fi-FI-SelmaNeural"],
+                Lang: "fi-FI"),
+            ["French"] = (
+                MaleVoices:   ["fr-FR-HenriNeural", "fr-FR-AlainNeural", "fr-FR-ClaudeNeural", "fr-FR-JeromeNeural",
+                               "fr-FR-MauriceNeural", "fr-FR-YvesNeural"],
+                FemaleVoices: ["fr-FR-DeniseNeural", "fr-FR-BrigitteNeural", "fr-FR-CelesteNeural", "fr-FR-CoralieNeural",
+                               "fr-FR-EloiseNeural", "fr-FR-JacquelineNeural", "fr-FR-JosephineNeural", "fr-FR-YvetteNeural"],
+                Lang: "fr-FR"),
+            ["German"] = (
+                MaleVoices:   ["de-DE-ConradNeural", "de-DE-BerndNeural", "de-DE-ChristophNeural", "de-DE-KasperNeural",
+                               "de-DE-KillianNeural", "de-DE-KlausNeural", "de-DE-RalfNeural"],
+                FemaleVoices: ["de-DE-KatjaNeural", "de-DE-AmalaNeural", "de-DE-ElkeNeural", "de-DE-GiselaNeural",
+                               "de-DE-KlarissaNeural", "de-DE-LouisaNeural", "de-DE-MajaNeural", "de-DE-TanjaNeural"],
+                Lang: "de-DE"),
+            ["Greek"] = (
+                MaleVoices:   ["el-GR-NestorasNeural"],
+                FemaleVoices: ["el-GR-AthinaNeural"],
+                Lang: "el-GR"),
+            ["Hungarian"] = (
+                MaleVoices:   ["hu-HU-TamasNeural"],
+                FemaleVoices: ["hu-HU-NoemiNeural"],
+                Lang: "hu-HU"),
+            ["Italian"] = (
+                MaleVoices:   ["it-IT-DiegoNeural", "it-IT-BenignoNeural", "it-IT-CalimeroNeural", "it-IT-CataldoNeural",
+                               "it-IT-GianniNeural", "it-IT-GiuseppeNeural", "it-IT-LisandroNeural", "it-IT-RinaldoNeural"],
+                FemaleVoices: ["it-IT-ElsaNeural", "it-IT-IsabellaNeural", "it-IT-FabiolaNeural", "it-IT-FiammaNeural",
+                               "it-IT-ImeldaNeural", "it-IT-IrmaNeural", "it-IT-PalmiraNeural", "it-IT-PierinaNeural"],
+                Lang: "it-IT"),
+            ["Japanese"] = (
+                MaleVoices:   ["ja-JP-KeitaNeural", "ja-JP-DaichiNeural", "ja-JP-NaokiNeural"],
+                FemaleVoices: ["ja-JP-NanamiNeural", "ja-JP-AoiNeural", "ja-JP-MayuNeural", "ja-JP-ShioriNeural"],
+                Lang: "ja-JP"),
+            ["Korean"] = (
+                MaleVoices:   ["ko-KR-InJoonNeural", "ko-KR-BongJinNeural", "ko-KR-GookMinNeural", "ko-KR-HyunsuNeural"],
+                FemaleVoices: ["ko-KR-SunHiNeural", "ko-KR-JiMinNeural", "ko-KR-SeoHyeonNeural", "ko-KR-SoonBokNeural",
+                               "ko-KR-YuJinNeural"],
+                Lang: "ko-KR"),
+            ["Norwegian"] = (
+                MaleVoices:   ["nb-NO-FinnNeural"],
+                FemaleVoices: ["nb-NO-PernilleNeural", "nb-NO-IselinNeural"],
+                Lang: "nb-NO"),
+            ["Polish"] = (
+                MaleVoices:   ["pl-PL-MarekNeural"],
+                FemaleVoices: ["pl-PL-ZofiaNeural", "pl-PL-AgnieszkaNeural"],
+                Lang: "pl-PL"),
+            ["Portuguese"] = (
+                MaleVoices:   ["pt-BR-AntonioNeural", "pt-BR-DonatoNeural", "pt-BR-FabioNeural", "pt-BR-HumbertoNeural",
+                               "pt-BR-JulioNeural", "pt-BR-NicolauNeural", "pt-BR-ValerioNeural"],
+                FemaleVoices: ["pt-BR-FranciscaNeural", "pt-BR-BrendaNeural", "pt-BR-ElzaNeural", "pt-BR-GiovannaNeural",
+                               "pt-BR-LeilaNeural", "pt-BR-LeticiaNeural", "pt-BR-ManuelaNeural", "pt-BR-ThalitaNeural",
+                               "pt-BR-YaraNeural"],
+                Lang: "pt-BR"),
+            ["Romanian"] = (
+                MaleVoices:   ["ro-RO-EmilNeural"],
+                FemaleVoices: ["ro-RO-AlinaNeural"],
+                Lang: "ro-RO"),
+            ["Russian"] = (
+                MaleVoices:   ["ru-RU-DmitryNeural"],
+                FemaleVoices: ["ru-RU-SvetlanaNeural", "ru-RU-DariyaNeural"],
+                Lang: "ru-RU"),
+            ["Slovak"] = (
+                MaleVoices:   ["sk-SK-LukasNeural"],
+                FemaleVoices: ["sk-SK-ViktoriaNeural"],
+                Lang: "sk-SK"),
+            ["Slovenian"] = (
+                MaleVoices:   ["sl-SI-RokNeural"],
+                FemaleVoices: ["sl-SI-PetraNeural"],
+                Lang: "sl-SI"),
+            ["Spanish"] = (
+                MaleVoices:   ["es-ES-AlvaroNeural", "es-ES-ArnauNeural", "es-ES-DarioNeural", "es-ES-EliasNeural",
+                               "es-ES-NilNeural", "es-ES-SaulNeural", "es-ES-TeoNeural"],
+                FemaleVoices: ["es-ES-ElviraNeural", "es-ES-AbrilNeural", "es-ES-EstrellaNeural", "es-ES-IreneNeural",
+                               "es-ES-LaiaNeural", "es-ES-LiaNeural", "es-ES-TrianaNeural", "es-ES-VeraNeural",
+                               "es-ES-XimenaNeural"],
+                Lang: "es-ES"),
+            ["Swedish"] = (
+                MaleVoices:   ["sv-SE-MattiasNeural"],
+                FemaleVoices: ["sv-SE-SofieNeural", "sv-SE-HilleviNeural"],
+                Lang: "sv-SE"),
+            ["Turkish"] = (
+                MaleVoices:   ["tr-TR-AhmetNeural"],
+                FemaleVoices: ["tr-TR-EmelNeural"],
+                Lang: "tr-TR"),
+            ["Ukrainian"] = (
+                MaleVoices:   ["uk-UA-OstapNeural"],
+                FemaleVoices: ["uk-UA-PolinaNeural"],
+                Lang: "uk-UA"),
         };
 
     private static bool IsTerminal(JobState state) =>
@@ -95,12 +205,13 @@ public sealed class PipelineOrchestrator : IPipelineOrchestrator
         [JobState.SeparatingMedia]      = JobState.Queued,
         [JobState.ExtractingVtt]        = JobState.AudioExtracted,
         [JobState.RemovingVoice]        = JobState.VttExtracted,
-        // Multi-language loop — any crash inside resets to VoiceRemoved
-        [JobState.TranslatingVtt]       = JobState.VoiceRemoved,
-        [JobState.VttTranslated]        = JobState.VoiceRemoved,
-        [JobState.SynthesisingAzureTts] = JobState.VoiceRemoved,
-        [JobState.AzureTtsSynthesised]  = JobState.VoiceRemoved,
-        [JobState.MixingAudio]          = JobState.VoiceRemoved,
+        [JobState.ExtractingSpeakerSamples] = JobState.VoiceRemoved,
+        // Multi-language loop — any crash inside resets to SpeakerSamplesExtracted
+        [JobState.TranslatingVtt]       = JobState.SpeakerSamplesExtracted,
+        [JobState.VttTranslated]        = JobState.SpeakerSamplesExtracted,
+        [JobState.SynthesisingAzureTts] = JobState.SpeakerSamplesExtracted,
+        [JobState.AzureTtsSynthesised]  = JobState.SpeakerSamplesExtracted,
+        [JobState.MixingAudio]          = JobState.SpeakerSamplesExtracted,
         [JobState.AddingToVideo]        = JobState.MixedNoVoiceWithSyntheticVoice,
     };
 
@@ -176,7 +287,7 @@ public sealed class PipelineOrchestrator : IPipelineOrchestrator
             case JobState.AudioExtracted:
                 await _jobService.TransitionStateAsync(job.Id, JobState.ExtractingVtt, ct: ct);
                 var extracting = (await _jobService.GetJobAsync(job.Id, ct))!;
-                await _vttExtractor.ExtractAsync(extracting, options.PythonPath, ct);
+                await _vttExtractor.ExtractAsync(extracting, options.PythonPath, options.EnableVoiceMarks, ct);
                 break;
 
             case JobState.VttExtracted:
@@ -188,6 +299,12 @@ public sealed class PipelineOrchestrator : IPipelineOrchestrator
                 break;
 
             case JobState.VoiceRemoved:
+                await _jobService.TransitionStateAsync(job.Id, JobState.ExtractingSpeakerSamples, ct: ct);
+                var extractingSamples = (await _jobService.GetJobAsync(job.Id, ct))!;
+                await _speakerSampleExtractor.ExtractAsync(extractingSamples, options.FfmpegPath, ct);
+                break;
+
+            case JobState.SpeakerSamplesExtracted:
                 // Mark start of the multi-language loop.
                 await _jobService.TransitionStateAsync(job.Id, JobState.TranslatingVtt, ct: ct);
                 var working = (await _jobService.GetJobAsync(job.Id, ct))!;
@@ -200,6 +317,17 @@ public sealed class PipelineOrchestrator : IPipelineOrchestrator
 
                 var done = results.Select(r => r.Language)
                                   .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+                // Speaker/gender labels are language-invariant (estimated once during
+                // transcription), so read them once from the ORIGINAL vtt here rather than
+                // per language. Empty when diarization was skipped — speakerVoices then
+                // stays null for every language below, preserving today's single-voice
+                // behaviour exactly.
+                var originalVttContent = !string.IsNullOrEmpty(working.VttFilePath)
+                    ? await _fs.ReadAllTextAsync(working.VttFilePath, ct)
+                    : string.Empty;
+                var speakerRows = SpeakerSampleExtractorService.ParseSpeakerRows(
+                    VttTranslatorService.ExtractLeadingNote(originalVttContent));
 
                 foreach (var lang in options.TranslationTargetLanguages)
                 {
@@ -214,9 +342,22 @@ public sealed class PipelineOrchestrator : IPipelineOrchestrator
                             $"No Azure TTS voice configured for language '{lang}'. " +
                             $"Add an entry to PipelineOrchestrator.VoiceMap.");
 
-                    var voiceName = options.UseFemaleVoice ? voice.FemaleVoice : voice.MaleVoice;
+                    var voiceName = options.UseFemaleVoice ? voice.FemaleVoices[0] : voice.MaleVoices[0];
 
-                    _logger.LogInformation("Processing language: {Language} (voice: {Voice})", lang, voiceName);
+                    // Assign each speaker their own voice from this language's gender pools,
+                    // cycling when there are more same-gender speakers than distinct voices.
+                    var speakerVoices = speakerRows.Count > 0
+                        ? SpeakerVoiceAssigner.Assign(
+                            speakerRows.Select(r => (r.Label, r.Gender)).ToList(),
+                            voice.MaleVoices, voice.FemaleVoices, options.UseFemaleVoice)
+                        : null;
+
+                    _logger.LogInformation(
+                        "Processing language: {Language} (default voice: {Voice}{SpeakerVoices})",
+                        lang, voiceName,
+                        speakerVoices is { Count: > 0 }
+                            ? $"; per-speaker: {string.Join(", ", speakerVoices.Select(kv => $"{kv.Key}={kv.Value}"))}"
+                            : "");
 
                     await _vttTranslator.TranslateAsync(working, lang, ct);
                     var translatedPath = working.TranslatedVttFilePath!;
@@ -227,6 +368,7 @@ public sealed class PipelineOrchestrator : IPipelineOrchestrator
                         options.AzureEndpointUrl,
                         voiceName,
                         voice.Lang,
+                        speakerVoices,
                         ct);
 
                     await _audioMixer.MixAsync(working, options.FfmpegPath, ct);

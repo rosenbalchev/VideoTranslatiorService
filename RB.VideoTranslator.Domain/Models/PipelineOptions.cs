@@ -19,6 +19,21 @@ public sealed class PipelineOptions
     public string FfmpegPath { get; set; } = "ffmpeg";
     public string PythonPath { get; set; } = "python";
     public string DemucsPath { get; set; } = "python";
+
+    /// <summary>
+    /// HuggingFace access token for the gated pyannote speaker-diarization models used by
+    /// tool_wavToVttVoiceMark.py. An install script logs this into the venv's HuggingFace cache
+    /// (via <c>huggingface-cli login</c>) so it does not need to be set as an env var at runtime.
+    /// </summary>
+    public string HfToken { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Whether tool_wavToVttVoiceMark.py should run speaker diarization and gender estimation
+    /// ("voice marks": the per-speaker NOTE header and per-cue speaker labels in the VTT).
+    /// Requires <see cref="HfToken"/>. When false, the script transcribes only, matching the
+    /// tool's pre-diarization behaviour.
+    /// </summary>
+    public bool EnableVoiceMarks { get; set; } = true;
     public string AzureSubscriptionKey { get; set; } = string.Empty;
     public string AzureEndpointUrl { get; set; } = string.Empty;
     public string AzureOpenAiEndpoint { get; set; } = string.Empty;
