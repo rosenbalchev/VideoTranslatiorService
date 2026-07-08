@@ -164,29 +164,33 @@ public sealed class VoiceRemoverServiceTests
     }
 
     [Fact]
-    public async Task RemoveAsync_ThrowsWhenCudaNotAvailable()
+    public async Task RemoveAsync_FallsBackToCpuWhenCudaNotAvailable()
     {
         _processRunner.RunAndCaptureAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
             .Returns("False");
 
-        await Assert.ThrowsAsync<InvalidOperationException>(
-            () => _sut.RemoveAsync(MakeJob()));
+        // Should complete without throwing — CPU is a valid fallback everywhere,
+        // not just an error condition (Demucs has no CUDA-only requirement).
+        await _sut.RemoveAsync(MakeJob());
     }
 
     [Fact]
-    public async Task RemoveAsync_DoesNotRunDemucsWhenCudaNotAvailable()
+    public async Task RemoveAsync_PassesDeviceCpuFlagWhenCudaNotAvailable()
     {
         _processRunner.RunAndCaptureAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
             .Returns("False");
 
-        try { await _sut.RemoveAsync(MakeJob()); } catch (InvalidOperationException) { }
+        await _sut.RemoveAsync(MakeJob(), "python");
 
-        await _processRunner.DidNotReceive()
-            .RunAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
+        await _processRunner.Received(1)
+            .RunAsync(
+                "python",
+                Arg.Is<string>(a => a.Contains("--device cpu")),
+                Arg.Any<CancellationToken>());
     }
 
     [Fact]
-    public async Task RemoveAsync_PassesDeviceCudaFlag()
+    public async Task RemoveAsync_PassesDeviceCudaFlagWhenCudaAvailable()
     {
         await _sut.RemoveAsync(MakeJob(), "python");
 

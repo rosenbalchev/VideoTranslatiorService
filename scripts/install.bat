@@ -65,6 +65,24 @@ if errorlevel 1 (
     exit /b 1
 )
 
+:: ── Reject an ARM64 Python interpreter ────────────────────────────────────────
+:: torch has had native win_arm64 wheels since 2.7.0, but torchaudio (also
+:: required here) has never published win_arm64 wheels — only win_amd64. An
+:: ARM64 Python interpreter can therefore never satisfy our pinned dependencies;
+:: pip would fail deep into the install with a cryptic "No matching distribution
+:: found for torch==2.5.1". Catch it here instead, before that happens.
+for /f "delims=" %%i in ('py -3.12 -c "import platform; print(platform.machine())" 2^>nul') do set PY_ARCH=%%i
+if /i "!PY_ARCH!"=="ARM64" (
+    echo ERROR: Python 3.12 is the ARM64 build — torchaudio has no win_arm64 wheels,
+    echo        so this venv can never install successfully on it.
+    echo        Install the x64 build instead ^(runs fine via Windows' built-in x64
+    echo        emulation^):
+    echo          winget uninstall -e --id Python.Python.3.12
+    echo          winget install -e --id Python.Python.3.12 --architecture x64
+    echo        Then delete any existing venv ^(scripts\uninstall.bat^) and re-run this script.
+    exit /b 1
+)
+
 :: ── Detect NVIDIA GPU / CUDA (pass --cuda or --cpu to override) ──────────────
 set MODE=cpu
 if /i "%~1"=="--cuda" set MODE=cuda

@@ -22,6 +22,7 @@ public sealed class VttToAzureTtsService : IVttToAzureTtsService
     private readonly IVideoJobRepository _repo;
     private readonly IFileSystem _fs;
     private readonly IAzureSpeechEngine _engine;
+    private readonly IVoicePaceRepository _voicePaceRepo;
     private readonly ILogger<VttToAzureTtsService> _logger;
 
     private static readonly Regex TimeLineRx = new(
@@ -36,12 +37,14 @@ public sealed class VttToAzureTtsService : IVttToAzureTtsService
         IVideoJobRepository repo,
         IFileSystem fs,
         IAzureSpeechEngine engine,
+        IVoicePaceRepository voicePaceRepo,
         ILogger<VttToAzureTtsService> logger)
     {
-        _repo   = repo;
-        _fs     = fs;
-        _engine = engine;
-        _logger = logger;
+        _repo          = repo;
+        _fs            = fs;
+        _engine        = engine;
+        _voicePaceRepo = voicePaceRepo;
+        _logger        = logger;
     }
 
     public async Task SynthesiseAsync(
@@ -115,12 +118,15 @@ public sealed class VttToAzureTtsService : IVttToAzureTtsService
     // not the pre-synthesis chars/sec estimate), so it converges on the real window fit.
     private const int MaxOverrunRetries = 2;
 
-    // Retries are allowed to push the rate past MaxRatePct — that cap governs the
-    // pre-synthesis estimate, whereas here we're correcting a measured overrun.
-    private const double MaxOverrunRetryRatePct = 200.0;
-
     // Overrun below this is not worth a re-synthesis round-trip.
     private const int OverrunToleranceMs = 100;
+
+    // Blends each voice's own observed pace (see VoicePace) into the pre-synthesis
+    // rate estimate once enough samples exist, ramping linearly from purely the
+    // file-wide estimate at VoicePaceRampStartSamples to purely the voice-specific
+    // one at VoicePaceRampFullSamples — a handful of entries is enough to converge.
+    internal const int VoicePaceRampStartSamples = 5;
+    internal const int VoicePaceRampFullSamples  = 10;
 
     private async Task<byte[]> SynthesisePerEntryAsync(
         IReadOnlyList<VttEntry> entries,
@@ -143,21 +149,49 @@ public sealed class VttToAzureTtsService : IVttToAzureTtsService
         var bitsPerSample  = 16;
         var formatDetected = false;
 
+        // Use this entry's assigned per-speaker voice when one exists, otherwise the
+        // single default voice (also the behaviour when diarization produced no header).
+        string ResolveVoice(VttEntry e) =>
+            e.Speaker is not null && speakerVoices is not null && speakerVoices.TryGetValue(e.Speaker, out var v)
+                ? v
+                : voiceName;
+
+        // Tracks each voice's own observed speaking pace, seeded from prior sessions
+        // (persisted per voice via IVoicePaceRepository) so the pre-synthesis rate
+        // estimate converges on what this voice actually needs instead of relying on
+        // the same overrun retries for every entry — including the first one, once
+        // enough history has accumulated for that voice across earlier jobs.
+        var persistedPaces = await _voicePaceRepo.GetAllAsync(ct);
+        var voicePaces = persistedPaces.ToDictionary(
+            kv => kv.Key,
+            kv => new VoicePace(kv.Value.TotalChars, kv.Value.TotalNaturalMs, kv.Value.SampleCount));
+
+        // Report what we know about each voice this run will actually use, before any
+        // synthesis happens, so it's visible whether a voice is starting cold or already
+        // has learned pace data from earlier sessions.
+        foreach (var voice in entries.Select(ResolveVoice).Distinct())
+        {
+            if (voicePaces.TryGetValue(voice, out var knownPace) && knownPace.SampleCount > 0)
+                _logger.LogInformation(
+                    "Voice {Voice}: known pace from {Samples} prior sample(s) (~{Cps:F1} chars/sec at 100% rate) — {Status}",
+                    voice, knownPace.SampleCount, knownPace.CharsPerSecondAt100,
+                    knownPace.SampleCount > VoicePaceRampStartSamples
+                        ? "using the learned estimate"
+                        : "still warming up, blended with the file-wide estimate");
+            else
+                _logger.LogInformation("Voice {Voice}: no prior pace history — starting from the file-wide estimate", voice);
+        }
+
         for (int i = 0; i < entries.Count; i++)
         {
             ct.ThrowIfCancellationRequested();
 
             var entry      = entries[i];
             var expectedMs = entry.EndMs - entry.StartMs;
-            var rate       = SpeechRateFor(entry.Text, expectedMs, charsPerSecond);
+            var entryVoice = ResolveVoice(entry);
 
-            // Use this entry's assigned per-speaker voice when one exists, otherwise the
-            // single default voice (also the behaviour when diarization produced no header).
-            var entryVoice = entry.Speaker is not null
-                && speakerVoices is not null
-                && speakerVoices.TryGetValue(entry.Speaker, out var mappedVoice)
-                    ? mappedVoice
-                    : voiceName;
+            var effectiveCps = EffectiveCharsPerSecond(voicePaces, entryVoice, charsPerSecond);
+            var rate          = SpeechRateFor(entry.Text, expectedMs, effectiveCps);
 
             var ssml = BuildEntrySsml(entry.Text, entryVoice, lang, rate);
 
@@ -194,6 +228,12 @@ public sealed class VttToAzureTtsService : IVttToAzureTtsService
                 }
             }
 
+            if (result is not null)
+            {
+                RecordVoicePaceSample(voicePaces, entryVoice, entry.Text.Length, rate, result.DurationMs);
+                await _voicePaceRepo.RecordSampleAsync(entryVoice, entry.Text.Length, rate, result.DurationMs, ct);
+            }
+
             // If the synthesised audio overruns its subtitle window, recalculate the prosody
             // rate from the actual overrun ratio and re-synthesise so the audio matches the
             // window. An underrun is left alone — Phase 2 pads it with trailing silence.
@@ -205,7 +245,7 @@ public sealed class VttToAzureTtsService : IVttToAzureTtsService
                     if (actualMs <= expectedMs + OverrunToleranceMs)
                         break;
 
-                    var newRate = Math.Min(rate * actualMs / expectedMs, MaxOverrunRetryRatePct);
+                    var newRate = Math.Min(rate * actualMs / expectedMs, MaxRatePct);
                     if (newRate <= rate)
                         break; // already at the retry ceiling — retrying again won't help
 
@@ -219,6 +259,8 @@ public sealed class VttToAzureTtsService : IVttToAzureTtsService
                     try
                     {
                         result = await _engine.SpeakSsmlAsync(retrySsml, endpointUrl, subscriptionKey, entryVoice, ct);
+                        RecordVoicePaceSample(voicePaces, entryVoice, entry.Text.Length, rate, result.DurationMs);
+                        await _voicePaceRepo.RecordSampleAsync(entryVoice, entry.Text.Length, rate, result.DurationMs, ct);
                     }
                     catch (OperationCanceledException) { throw; }
                     catch (Exception ex)
@@ -304,6 +346,67 @@ public sealed class VttToAzureTtsService : IVttToAzureTtsService
         return ConcatenateWav(chunks);
     }
 
+    // ── Per-voice pace learning ──────────────────────────────────────────────
+
+    // Accumulates a voice's observed natural (100%-rate) chars/sec pace from
+    // synthesis results, back-derived from whatever rate was actually used —
+    // e.g. 40 chars in 1000ms at rate=200% implies 20 chars/sec at rate=100%.
+    internal sealed class VoicePace
+    {
+        private double _totalChars;
+        private double _totalNaturalMs;
+
+        public int SampleCount { get; private set; }
+
+        public VoicePace() { }
+
+        // Seeds accumulated totals from a persisted VoicePaceStat (a prior session's
+        // learning for this voice), so this session continues from where the last left off.
+        public VoicePace(double totalChars, double totalNaturalMs, int sampleCount)
+        {
+            _totalChars     = totalChars;
+            _totalNaturalMs = totalNaturalMs;
+            SampleCount     = sampleCount;
+        }
+
+        public void Record(int textLength, double rate, int actualMs)
+        {
+            if (textLength <= 0 || actualMs <= 0 || rate <= 0) return;
+            _totalChars     += textLength;
+            _totalNaturalMs += actualMs * rate / 100.0;
+            SampleCount++;
+        }
+
+        public double CharsPerSecondAt100 => _totalNaturalMs > 0 ? _totalChars / (_totalNaturalMs / 1000.0) : 0;
+    }
+
+    internal static void RecordVoicePaceSample(
+        Dictionary<string, VoicePace> voicePaces, string voice, int textLength, double rate, int actualMs)
+    {
+        if (!voicePaces.TryGetValue(voice, out var pace))
+            voicePaces[voice] = pace = new VoicePace();
+        pace.Record(textLength, rate, actualMs);
+    }
+
+    // Blends the file-wide chars/sec estimate with this voice's own observed pace once
+    // enough samples exist, ramping linearly between VoicePaceRampStartSamples (still
+    // purely the file-wide estimate) and VoicePaceRampFullSamples (purely voice-specific).
+    internal static double EffectiveCharsPerSecond(
+        Dictionary<string, VoicePace> voicePaces, string voice, double fallbackCharsPerSecond)
+    {
+        if (!voicePaces.TryGetValue(voice, out var pace) || pace.SampleCount <= VoicePaceRampStartSamples)
+            return fallbackCharsPerSecond;
+
+        var voiceCps = pace.CharsPerSecondAt100;
+        if (voiceCps <= 0) return fallbackCharsPerSecond;
+
+        var weight = pace.SampleCount >= VoicePaceRampFullSamples
+            ? 1.0
+            : (pace.SampleCount - VoicePaceRampStartSamples) / (double)(VoicePaceRampFullSamples - VoicePaceRampStartSamples);
+
+        return weight * voiceCps + (1 - weight) * fallbackCharsPerSecond;
+    }
+
     private static string BuildEntrySsml(string text, string voiceName, string lang, double rate)
     {
         var escaped = XmlEscape(text);
@@ -349,11 +452,18 @@ public sealed class VttToAzureTtsService : IVttToAzureTtsService
     // Fallback chars/sec used when the subtitle file provides no usable duration data.
     private const double FallbackCharsPerSecond = 13.0;
 
-    // Default speaking rate applied to all normal entries — slightly slower than the
-    // neural voice's natural pace to give the listener comfortable time to follow.
-    // Only raised above this when text would genuinely overflow its subtitle window.
+    // Fallback rate for degenerate inputs only (no text, or a zero/negative window) —
+    // there's no chars/window math to run in those cases, so this is just a sane default,
+    // not a floor on the computed rate (see MinRatePct for that).
     public const double DefaultRatePct = 120.0;
-    public const double MaxRatePct     = 120.0;
+
+    // Floor and ceiling for the computed rate — past MinRatePct, speech starts sounding
+    // unnaturally sluggish; past MaxRatePct, it stops being intelligible. Between them,
+    // the rate is driven purely by chars ÷ window ÷ chars-per-second (see SpeechRateFor),
+    // so a generous window genuinely slows the voice down instead of always padding a
+    // fixed-rate clip with trailing silence.
+    public const double MinRatePct = 70.0;
+    public const double MaxRatePct = 200.0;
 
     internal static string BuildSsml(
         IReadOnlyList<VttEntry> entries,
@@ -389,20 +499,18 @@ public sealed class VttToAzureTtsService : IVttToAzureTtsService
         return sb.ToString();
     }
 
-    // Returns the prosody rate (%) for an entry.
-    // charsPerSecond is derived from the subtitle file's own average pace so the estimate
-    // is calibrated to the actual content rather than a generic constant.
-    // - If text would overflow its window, speed up to fit (capped at MaxRatePct).
-    // - Otherwise always use DefaultRatePct so the voice never rushes ahead of the subtitles.
+    // Returns the prosody rate (%) for an entry, driven entirely by chars ÷ window ÷
+    // charsPerSecond — the rate needed for this text to exactly fill its subtitle window
+    // at the given pace, clamped to [MinRatePct, MaxRatePct]. charsPerSecond is normally
+    // the caller's learned-per-voice/file-wide estimate, so the result reflects the
+    // actual observed pace rather than a generic constant.
     internal static double SpeechRateFor(string text, int availableMs,
         double charsPerSecond = FallbackCharsPerSecond)
     {
         if (availableMs <= 0 || text.Length == 0) return DefaultRatePct;
         var estimatedMs = text.Length / charsPerSecond * 1000.0;
         var naturalRate = estimatedMs / availableMs * 100.0;
-        return naturalRate > DefaultRatePct
-            ? Math.Min(naturalRate, MaxRatePct)
-            : DefaultRatePct;
+        return Math.Clamp(naturalRate, MinRatePct, MaxRatePct);
     }
 
     // Formats an absolute rate (e.g. 105.0, meaning 105%) as the signed relative
