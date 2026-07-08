@@ -45,7 +45,13 @@ done
 if [ -z "$PYTHON_BIN" ]; then
     echo "ERROR: Python 3.12 not found."
     echo "       macOS:  brew install python@3.12"
-    echo "       Linux:  sudo apt install python3.12 python3.12-venv   (Debian/Ubuntu)"
+    echo "       Ubuntu/Debian: sudo apt install python3.12 python3.12-venv"
+    echo "         If that package isn't found (Ubuntu 22.04/20.04 don't ship 3.12"
+    echo "         by default — only 24.04+ does), add the deadsnakes PPA first:"
+    echo "           sudo apt install software-properties-common"
+    echo "           sudo add-apt-repository ppa:deadsnakes/ppa"
+    echo "           sudo apt update"
+    echo "           sudo apt install python3.12 python3.12-venv"
     exit 1
 fi
 echo " Python         : $("$PYTHON_BIN" --version)"

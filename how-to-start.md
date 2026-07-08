@@ -60,7 +60,16 @@ The install scripts require Python 3.12 specifically.
 
 **macOS:** `brew install python@3.12` (the script looks for `python3.12` on `PATH`).
 
-**Linux (Debian/Ubuntu):** `sudo apt install python3.12 python3.12-venv`
+**Linux (Debian/Ubuntu 24.04+):** `sudo apt install python3.12 python3.12-venv`
+
+**Ubuntu 22.04/20.04:** these releases don't ship Python 3.12 in the default repos (only 24.04+ does) — `apt install python3.12` fails with *"has no installation candidate"*. Add the [deadsnakes PPA](https://launchpad.net/~deadsnakes/+archive/ubuntu/ppa) first:
+```bash
+sudo apt update
+sudo apt install software-properties-common
+sudo add-apt-repository ppa:deadsnakes/ppa
+sudo apt update
+sudo apt install python3.12 python3.12-venv
+```
 
 ### Homebrew (macOS only)
 Install from https://brew.sh if not already present — the install script uses it to install ffmpeg.

@@ -44,7 +44,7 @@ import numpy as np
 import librosa
 import torch
 import whisperx
-from huggingface_hub import HfFolder
+from huggingface_hub import get_token
 
 SAMPLE_RATE = 16000  # whisperx.load_audio always resamples to 16kHz mono
 MALE_FEMALE_F0_THRESHOLD_HZ = 165.0
@@ -211,7 +211,7 @@ def transcribe_to_vtt(
     speaker_genders: dict[str, tuple] = {}
 
     if diarize:
-        token = hf_token or HfFolder.get_token()
+        token = hf_token or get_token()
         if not token:
             raise ValueError(
                 "Speaker diarization requires a HuggingFace token. "
