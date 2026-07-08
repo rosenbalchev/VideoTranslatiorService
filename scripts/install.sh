@@ -110,7 +110,21 @@ if [ "$OS_NAME" = "Darwin" ] && [ "$MODE" = "cuda" ]; then
     MODE="cpu"
 fi
 
-echo " Platform       : $OS_NAME"
+# torch/torchvision/torchaudio 2.5.1 publish plain CPU wheels for linux_aarch64, but
+# never a "+cu124" CUDA build for that architecture — real ARM64+CUDA hardware (Jetson,
+# GH200/Grace-Hopper) needs NVIDIA's own separate wheel channel, well outside what these
+# pinned index URLs serve. Without this check, nvidia-smi succeeding on such a box would
+# auto-select MODE=cuda and then fail with "No matching distribution found for
+# torch==2.5.1+cu124" deep inside pip, same failure class as Windows-on-ARM.
+ARCH="$(uname -m)"
+if [ "$MODE" = "cuda" ] && [ "$OS_NAME" = "Linux" ] && { [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; }; then
+    echo " WARNING: --cuda was requested/detected on Linux ARM64 ($ARCH), but torch 2.5.1"
+    echo "          has no CUDA build for this architecture (CPU-only wheels exist) — using CPU."
+    echo "          Jetson/GH200-class CUDA needs NVIDIA's own wheel channel, not covered here."
+    MODE="cpu"
+fi
+
+echo " Platform       : $OS_NAME ($ARCH)"
 if [ "$MODE" = "cuda" ]; then
     echo " Hardware       : NVIDIA GPU detected (nvidia-smi) — installing CUDA build"
 else
