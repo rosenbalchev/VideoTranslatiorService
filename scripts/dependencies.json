@@ -14,12 +14,14 @@
     "whisperx==3.4.2",
     "pyannote-audio==3.4.0",
     "speechbrain==1.0.3",
-    "librosa"
+    "librosa",
+    "huggingface_hub==0.36.0"
   ],
   "commonNotes": [
     "whisperx pinned to 3.4.2 — 3.5+ requires torch 2.7.1+, which would silently upgrade the pinned torch above and pull in torchcodec.",
     "pyannote-audio pinned to 3.4.0 — 4.0+ requires torch 2.8+ / torchcodec, same trap, pulled in transitively by whisperx's unbounded requirement.",
-    "speechbrain pinned to 1.0.3 — 1.1.0 adds a lazy-import k2 integration that crashes under Python 3.12 when k2 is not installed (hasattr no longer swallows ImportError), triggered by pytorch_lightning's inspect.stack() call while loading pyannote's VAD model."
+    "speechbrain pinned to 1.0.3 — 1.1.0 adds a lazy-import k2 integration that crashes under Python 3.12 when k2 is not installed (hasattr no longer swallows ImportError), triggered by pytorch_lightning's inspect.stack() call while loading pyannote's VAD model.",
+    "huggingface_hub pinned to 0.36.0 (the last 0.x release) — 1.0.0 (Oct 2025) removed the deprecated `use_auth_token` kwarg entirely in favour of `token`. pyannote-audio 3.4.0 still calls hf_hub_download(..., use_auth_token=...) internally, so an unpinned install fails with `TypeError: hf_hub_download() got an unexpected keyword argument 'use_auth_token'` the first time diarization loads its gated model. https://github.com/huggingface/huggingface_hub/issues/1094"
   ],
   "cuda": {
     "indexUrl": "https://download.pytorch.org/whl/cu124",
