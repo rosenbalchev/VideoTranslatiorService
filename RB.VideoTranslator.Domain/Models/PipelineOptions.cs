@@ -34,6 +34,17 @@ public sealed class PipelineOptions
     /// tool's pre-diarization behaviour.
     /// </summary>
     public bool EnableVoiceMarks { get; set; } = true;
+
+    /// <summary>
+    /// When true, VttExtractorService transcribes via IWhisperOnnxTranscriberService (native
+    /// C#, RB.VideoTranslator.WhisperOnnx: DirectML GPU falling back to CPU) instead of
+    /// shelling out to tool_wavToVttVoiceMark.py's WhisperX/CTranslate2 path. If voice marks
+    /// are enabled, the resulting segments are handed to tool_diarizeVtt.py for diarization
+    /// (whisperx/pyannote/torch — unaffected either way, no ONNX/C# equivalent exists).
+    /// Requires the model produced by scripts/export_onnx_models.bat or .sh, expected at
+    /// &lt;WorkingFolderPath&gt;\onnx-models\whisper-medium.
+    /// </summary>
+    public bool UseOnnxTranscription { get; set; } = true;
     public string AzureSubscriptionKey { get; set; } = string.Empty;
     public string AzureEndpointUrl { get; set; } = string.Empty;
     public string AzureOpenAiEndpoint { get; set; } = string.Empty;

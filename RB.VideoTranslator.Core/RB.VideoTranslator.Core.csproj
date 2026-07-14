@@ -31,11 +31,23 @@
     <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="10.0.*" />
     <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.*" />
     <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.*" />
+    <!-- Brings the DirectML-flavored onnxruntime.dll (GPU+CPU). RB.VideoTranslator.WhisperOnnx
+         only references Microsoft.ML.OnnxRuntime.Managed (types, no native runtime) specifically
+         so this is the only native onnxruntime asset in play here — see the comment in that
+         project's .csproj for why mixing native-runtime flavors in one project/output breaks.
+         Windows ML / NPU support (RB.VideoTranslator.NpuTranscriber) deliberately runs as a
+         separate, isolated executable rather than being referenced here — beyond the same
+         native-asset-conflict class of problem, the underlying ExecutionProviderCatalog API
+         has been observed to segfault (native access violation, not a catchable .NET exception)
+         when the OS has a stale/mismatched system Windows ML component — something a try/catch
+         in this process cannot protect against, but an isolated child process can. -->
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.DirectML" Version="1.24.*" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\RB.VideoTranslator.Data\RB.VideoTranslator.Data.csproj" />
     <ProjectReference Include="..\RB.VideoTranslator.Domain\RB.VideoTranslator.Domain.csproj" />
+    <ProjectReference Include="..\RB.VideoTranslator.WhisperOnnx\RB.VideoTranslator.WhisperOnnx.csproj" />
   </ItemGroup>
 
   <ItemGroup>

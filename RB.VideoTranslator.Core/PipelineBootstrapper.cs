@@ -111,11 +111,31 @@ public sealed class PipelineBootstrapper : IPipelineRunner
 
     // VoicePaceStats is a new, independent table added after EnsureCreatedAsync's
     // all-or-nothing check was already satisfied for existing installs (it only creates
-    // the schema when the database file doesn't exist yet, not per-table). Since it has
-    // no relation to VideoJobs, creating it directly is simpler and safer than the
-    // recreate-the-whole-database approach MigrateSchemaAsync uses for column changes.
+    // the schema when the database file doesn't exist yet, not per-table). It's just cached
+    // pacing stats (no user data), so if an older install has a stale schema, drop and recreate
+    // it empty rather than migrating columns in place.
     private static async Task EnsureVoicePaceTableAsync(AppDbContext db)
     {
+        var conn = db.Database.GetDbConnection();
+        await conn.OpenAsync();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "PRAGMA table_info('VoicePaceStats');";
+
+        var hasLastRateUsed = false;
+        var tableExists = false;
+        using (var reader = await cmd.ExecuteReaderAsync())
+        {
+            while (await reader.ReadAsync())
+            {
+                tableExists = true;
+                if (string.Equals(reader.GetString(1), "LastRateUsed", StringComparison.OrdinalIgnoreCase))
+                    hasLastRateUsed = true;
+            }
+        }
+
+        if (tableExists && !hasLastRateUsed)
+            await db.Database.ExecuteSqlRawAsync("""DROP TABLE "VoicePaceStats";""");
+
         await db.Database.ExecuteSqlRawAsync("""
             CREATE TABLE IF NOT EXISTS "VoicePaceStats" (
                 "Voice" TEXT NOT NULL CONSTRAINT "PK_VoicePaceStats" PRIMARY KEY,
@@ -126,15 +146,6 @@ public sealed class PipelineBootstrapper : IPipelineRunner
                 "UpdatedAt" TEXT NOT NULL
             );
             """);
-
-        // Additive column for installs that already created VoicePaceStats without it
-        // (this file shipped before LastRateUsed was added).
-        try
-        {
-            await db.Database.ExecuteSqlRawAsync(
-                """ALTER TABLE "VoicePaceStats" ADD COLUMN "LastRateUsed" REAL NOT NULL DEFAULT 0;""");
-        }
-        catch { /* column already exists — best-effort */ }
     }
 
     /// <summary>

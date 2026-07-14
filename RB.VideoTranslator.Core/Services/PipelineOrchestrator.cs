@@ -287,7 +287,14 @@ public sealed class PipelineOrchestrator : IPipelineOrchestrator
             case JobState.AudioExtracted:
                 await _jobService.TransitionStateAsync(job.Id, JobState.ExtractingVtt, ct: ct);
                 var extracting = (await _jobService.GetJobAsync(job.Id, ct))!;
-                await _vttExtractor.ExtractAsync(extracting, options.PythonPath, options.EnableVoiceMarks, ct);
+                // Fixed convention matching scripts/export_onnx_models.{bat,sh}'s output location —
+                // not a separate appsettings key, so it always follows WorkingFolderPath.
+                var onnxModelPath = options.UseOnnxTranscription
+                    ? Path.Combine(options.WorkingFolderPath, "onnx-models", "whisper-medium")
+                    : null;
+                await _vttExtractor.ExtractAsync(
+                    extracting, options.PythonPath, options.EnableVoiceMarks,
+                    options.UseOnnxTranscription, onnxModelPath, options.FfmpegPath, ct);
                 break;
 
             case JobState.VttExtracted:

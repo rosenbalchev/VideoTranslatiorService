@@ -41,6 +41,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IFileSystem, PhysicalFileSystem>();
         services.AddScoped<IMediaSeparatorService, MediaSeparatorService>();
         services.AddScoped<IVttExtractorService, VttExtractorService>();
+        services.AddScoped<IWhisperOnnxTranscriberService, WhisperOnnxTranscriberService>();
         services.AddScoped<IVttTranslatorService, VttTranslatorService>();
         services.AddScoped<IVttToAzureTtsService, VttToAzureTtsService>();
         services.AddScoped<IVoiceRemoverService, VoiceRemoverService>();

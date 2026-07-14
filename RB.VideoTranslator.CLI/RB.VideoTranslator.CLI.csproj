@@ -27,4 +27,27 @@
     </None>
   </ItemGroup>
 
+  <!-- RB.VideoTranslator.NpuTranscriber (Intel/Qualcomm/AMD NPU support via Windows ML) can't be
+       a normal <ProjectReference> — it targets net10.0-windows10.0.19041.0, which this plain
+       net10.0 project (kept cross-platform-buildable, see RB.VideoTranslator.Core.csproj) can't
+       reference directly. Build it explicitly and copy its output into npu-transcriber\ instead —
+       WhisperOnnxTranscriberService.cs looks for it at exactly that path relative to this app's
+       own output, and it must stay in its own subfolder (not merged into this output directory)
+       since its Windows ML package bundles a differently-flavored onnxruntime.dll under the same
+       filename as the one this app uses. Windows-only: skipped entirely elsewhere, matching how
+       NPU acceleration itself is a Windows ML/Windows-only feature. -->
+  <Target Name="BuildAndCopyNpuTranscriber" AfterTargets="Build" Condition="'$(OS)' == 'Windows_NT'">
+    <PropertyGroup>
+      <NpuTranscriberProject>$(MSBuildThisFileDirectory)..\RB.VideoTranslator.NpuTranscriber\RB.VideoTranslator.NpuTranscriber.csproj</NpuTranscriberProject>
+      <NpuTranscriberOutDir>$(MSBuildThisFileDirectory)..\RB.VideoTranslator.NpuTranscriber\bin\$(Configuration)\net10.0-windows10.0.19041.0\</NpuTranscriberOutDir>
+    </PropertyGroup>
+    <MSBuild Projects="$(NpuTranscriberProject)" Targets="Build" Properties="Configuration=$(Configuration)" />
+    <ItemGroup>
+      <NpuTranscriberOutput Include="$(NpuTranscriberOutDir)**\*.*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(NpuTranscriberOutput)"
+          DestinationFolder="$(OutDir)npu-transcriber\%(RecursiveDir)"
+          SkipUnchangedFiles="true" />
+  </Target>
+
 </Project>

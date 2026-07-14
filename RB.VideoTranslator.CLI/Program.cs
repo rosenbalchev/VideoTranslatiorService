@@ -70,6 +70,13 @@ internal sealed class Program
             Description = "Use a female Azure TTS voice instead of the default male voice."
         };
 
+        var onnxTranscriptionOpt = new Option<bool>("--onnx-transcription")
+        {
+            Description = "Transcribe via an ONNX-exported Whisper model (onnxruntime) instead of WhisperX/CTranslate2. " +
+                          "Overrides UseOnnxTranscription in appsettings.json. Requires running " +
+                          "scripts/export_onnx_models.bat or .sh first."
+        };
+
         var root = new RootCommand(
             "RB.VideoTranslator — picks up video files and advances them through the translation pipeline. " +
             "Configure via appsettings.json (RBVideoTranslator section); CLI arguments override config values.");
@@ -85,6 +92,7 @@ internal sealed class Program
         root.Add(targetLangOpt);
         root.Add(venvOpt);
         root.Add(femaleOpt);
+        root.Add(onnxTranscriptionOpt);
 
         root.SetAction(async parseResult =>
         {
@@ -96,9 +104,9 @@ internal sealed class Program
                 // Initialize pipeline with merged CLI options
                 await runner.InitializeAsync(
                     configFilePath: null, // uses default "appsettings.json"
-                    options: opts => MergeCliOptions(parseResult, opts, workFolderOpt, ffmpegOpt, pythonOpt, 
-                        demucsOpt, azureKeyOpt, azureEndpointOpt, openAiEndpointOpt, openAiDeploymentOpt, 
-                        targetLangOpt, venvOpt, femaleOpt));
+                    options: opts => MergeCliOptions(parseResult, opts, workFolderOpt, ffmpegOpt, pythonOpt,
+                        demucsOpt, azureKeyOpt, azureEndpointOpt, openAiEndpointOpt, openAiDeploymentOpt,
+                        targetLangOpt, venvOpt, femaleOpt, onnxTranscriptionOpt));
 
                 // Run the pipeline
                 await runner.RunAsync();
@@ -131,11 +139,13 @@ internal sealed class Program
         Option<string?> openAiDeploymentOpt,
         Option<string?> targetLangOpt,
         Option<DirectoryInfo?> venvOpt,
-        Option<bool> femaleOpt)
+        Option<bool> femaleOpt,
+        Option<bool> onnxTranscriptionOpt)
     {
         var workFolder = parseResult.GetValue(workFolderOpt);
         var venvFolder = parseResult.GetValue(venvOpt);
         var useFemale = parseResult.GetValue(femaleOpt);
+        var useOnnxTranscription = parseResult.GetValue(onnxTranscriptionOpt);
 
         ConfigurationMerger.MergeCliOptions(
             opts,
@@ -149,6 +159,7 @@ internal sealed class Program
             openAiDeployment: parseResult.GetValue(openAiDeploymentOpt),
             targetLanguages: parseResult.GetValue(targetLangOpt),
             venvPath: venvFolder?.FullName,
-            useFemaleVoice: useFemale ? true : null);
+            useFemaleVoice: useFemale ? true : null,
+            useOnnxTranscription: useOnnxTranscription ? true : null);
     }
 }
