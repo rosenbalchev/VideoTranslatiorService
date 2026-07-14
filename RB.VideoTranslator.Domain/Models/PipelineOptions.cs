@@ -52,4 +52,16 @@ public sealed class PipelineOptions
     public string[] TranslationTargetLanguages { get; set; } = ["Bulgarian"];
     public string OutputFolderPath { get; set; } = string.Empty;
     public bool UseFemaleVoice { get; set; } = false;
+
+    /// <summary>
+    /// When true, the pipeline pauses right after subtitle extraction (state
+    /// <c>VttExtracted</c>, before voice removal) and blocks on a keypress so a human can
+    /// review the per-speaker gender estimates written to the VTT's NOTE header and correct
+    /// them by hand if needed. Gender is a pitch-threshold heuristic (see vtt_common.py)
+    /// that can misclassify voices whose pitch sits near the male/female boundary, and it
+    /// feeds directly into which Azure TTS voice pool a speaker's dialogue is synthesised
+    /// with (see SpeakerVoiceAssigner), so a wrong estimate here means the wrong-gender
+    /// voice downstream. Off by default since it requires an attended terminal.
+    /// </summary>
+    public bool PauseForGenderReview { get; set; } = false;
 }

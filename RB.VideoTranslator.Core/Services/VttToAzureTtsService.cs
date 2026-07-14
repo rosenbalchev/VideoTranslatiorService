@@ -121,13 +121,6 @@ public sealed class VttToAzureTtsService : IVttToAzureTtsService
     // Overrun below this is not worth a re-synthesis round-trip.
     private const int OverrunToleranceMs = 100;
 
-    // Blends each voice's own observed pace (see VoicePace) into the pre-synthesis
-    // rate estimate once enough samples exist, ramping linearly from purely the
-    // file-wide estimate at VoicePaceRampStartSamples to purely the voice-specific
-    // one at VoicePaceRampFullSamples — a handful of entries is enough to converge.
-    internal const int VoicePaceRampStartSamples = 5;
-    internal const int VoicePaceRampFullSamples  = 10;
-
     private async Task<byte[]> SynthesisePerEntryAsync(
         IReadOnlyList<VttEntry> entries,
         string endpointUrl,
@@ -156,31 +149,40 @@ public sealed class VttToAzureTtsService : IVttToAzureTtsService
                 ? v
                 : voiceName;
 
-        // Tracks each voice's own observed speaking pace, seeded from prior sessions
-        // (persisted per voice via IVoicePaceRepository) so the pre-synthesis rate
-        // estimate converges on what this voice actually needs instead of relying on
-        // the same overrun retries for every entry — including the first one, once
-        // enough history has accumulated for that voice across earlier jobs.
-        var persistedPaces = await _voicePaceRepo.GetAllAsync(ct);
-        var voicePaces = persistedPaces.ToDictionary(
-            kv => kv.Key,
-            kv => new VoicePace(kv.Value.TotalChars, kv.Value.TotalNaturalMs, kv.Value.SampleCount));
+        // Refits a per-voice ridge-regression pace model (see VoicePaceModel) from every
+        // paragraph sample logged so far, reloaded fresh from the DB for this job rather
+        // than maintained incrementally — expected per-voice sample volume stays small
+        // enough that a full refit is cheap and keeps the model trivial to re-derive.
+        var allSamples = await _voicePaceRepo.GetAllSamplesAsync(ct);
+        var samplesByVoice = allSamples
+            .GroupBy(s => s.Voice)
+            .ToDictionary(g => g.Key, g => (IReadOnlyList<VoicePaceSample>)g.ToList());
 
-        // Report what we know about each voice this run will actually use, before any
-        // synthesis happens, so it's visible whether a voice is starting cold or already
-        // has learned pace data from earlier sessions.
+        var voiceModels = new Dictionary<string, VoicePaceModel>();
+        VoicePaceModel ModelFor(string voice)
+        {
+            if (!voiceModels.TryGetValue(voice, out var model))
+            {
+                samplesByVoice.TryGetValue(voice, out var voiceSamples);
+                model = VoicePaceModel.Fit(voiceSamples ?? [], charsPerSecond);
+                voiceModels[voice] = model;
+            }
+            return model;
+        }
+
+        // Print what every voice this run will actually use has learned so far, before any
+        // synthesis happens, so the fitted model is visible without a separate DB query.
+        var table = new StringBuilder();
+        table.AppendLine("Voice pace models (ridge regression refit from logged paragraph samples):");
+        table.AppendLine($"{"Voice",-32} {"Samples",7} {"Chars/sec",10} {"Sentence(ms)",13} {"Comma(ms)",10}");
         foreach (var voice in entries.Select(ResolveVoice).Distinct())
         {
-            if (voicePaces.TryGetValue(voice, out var knownPace) && knownPace.SampleCount > 0)
-                _logger.LogInformation(
-                    "Voice {Voice}: known pace from {Samples} prior sample(s) (~{Cps:F1} chars/sec at 100% rate) — {Status}",
-                    voice, knownPace.SampleCount, knownPace.CharsPerSecondAt100,
-                    knownPace.SampleCount > VoicePaceRampStartSamples
-                        ? "using the learned estimate"
-                        : "still warming up, blended with the file-wide estimate");
-            else
-                _logger.LogInformation("Voice {Voice}: no prior pace history — starting from the file-wide estimate", voice);
+            var model = ModelFor(voice);
+            table.AppendLine(
+                $"{voice,-32} {model.SampleCount,7} {model.EffectiveCharsPerSecond,10:F1} " +
+                $"{model.Coefficients[2],13:F1} {model.Coefficients[3],10:F1}");
         }
+        _logger.LogInformation("{Table}", table.ToString());
 
         for (int i = 0; i < entries.Count; i++)
         {
@@ -189,9 +191,12 @@ public sealed class VttToAzureTtsService : IVttToAzureTtsService
             var entry      = entries[i];
             var expectedMs = entry.EndMs - entry.StartMs;
             var entryVoice = ResolveVoice(entry);
+            var features   = TextFeatureExtractor.Extract(entry.Text);
 
-            var effectiveCps = EffectiveCharsPerSecond(voicePaces, entryVoice, charsPerSecond);
-            var rate          = SpeechRateFor(entry.Text, expectedMs, effectiveCps);
+            var naturalMs = ModelFor(entryVoice).PredictNaturalMs(features);
+            var rate = expectedMs > 0 && features.CharCount > 0
+                ? Math.Clamp(naturalMs / expectedMs * 100.0, MinRatePct, MaxRatePct)
+                : DefaultRatePct;
 
             var ssml = BuildEntrySsml(entry.Text, entryVoice, lang, rate);
 
@@ -229,10 +234,7 @@ public sealed class VttToAzureTtsService : IVttToAzureTtsService
             }
 
             if (result is not null)
-            {
-                RecordVoicePaceSample(voicePaces, entryVoice, entry.Text.Length, rate, result.DurationMs);
-                await _voicePaceRepo.RecordSampleAsync(entryVoice, entry.Text.Length, rate, result.DurationMs, ct);
-            }
+                await _voicePaceRepo.RecordSampleAsync(entryVoice, features, rate, expectedMs, result.DurationMs, ct);
 
             // If the synthesised audio overruns its subtitle window, recalculate the prosody
             // rate from the actual overrun ratio and re-synthesise so the audio matches the
@@ -259,8 +261,7 @@ public sealed class VttToAzureTtsService : IVttToAzureTtsService
                     try
                     {
                         result = await _engine.SpeakSsmlAsync(retrySsml, endpointUrl, subscriptionKey, entryVoice, ct);
-                        RecordVoicePaceSample(voicePaces, entryVoice, entry.Text.Length, rate, result.DurationMs);
-                        await _voicePaceRepo.RecordSampleAsync(entryVoice, entry.Text.Length, rate, result.DurationMs, ct);
+                        await _voicePaceRepo.RecordSampleAsync(entryVoice, features, rate, expectedMs, result.DurationMs, ct);
                     }
                     catch (OperationCanceledException) { throw; }
                     catch (Exception ex)
@@ -347,65 +348,12 @@ public sealed class VttToAzureTtsService : IVttToAzureTtsService
     }
 
     // ── Per-voice pace learning ──────────────────────────────────────────────
-
-    // Accumulates a voice's observed natural (100%-rate) chars/sec pace from
-    // synthesis results, back-derived from whatever rate was actually used —
-    // e.g. 40 chars in 1000ms at rate=200% implies 20 chars/sec at rate=100%.
-    internal sealed class VoicePace
-    {
-        private double _totalChars;
-        private double _totalNaturalMs;
-
-        public int SampleCount { get; private set; }
-
-        public VoicePace() { }
-
-        // Seeds accumulated totals from a persisted VoicePaceStat (a prior session's
-        // learning for this voice), so this session continues from where the last left off.
-        public VoicePace(double totalChars, double totalNaturalMs, int sampleCount)
-        {
-            _totalChars     = totalChars;
-            _totalNaturalMs = totalNaturalMs;
-            SampleCount     = sampleCount;
-        }
-
-        public void Record(int textLength, double rate, int actualMs)
-        {
-            if (textLength <= 0 || actualMs <= 0 || rate <= 0) return;
-            _totalChars     += textLength;
-            _totalNaturalMs += actualMs * rate / 100.0;
-            SampleCount++;
-        }
-
-        public double CharsPerSecondAt100 => _totalNaturalMs > 0 ? _totalChars / (_totalNaturalMs / 1000.0) : 0;
-    }
-
-    internal static void RecordVoicePaceSample(
-        Dictionary<string, VoicePace> voicePaces, string voice, int textLength, double rate, int actualMs)
-    {
-        if (!voicePaces.TryGetValue(voice, out var pace))
-            voicePaces[voice] = pace = new VoicePace();
-        pace.Record(textLength, rate, actualMs);
-    }
-
-    // Blends the file-wide chars/sec estimate with this voice's own observed pace once
-    // enough samples exist, ramping linearly between VoicePaceRampStartSamples (still
-    // purely the file-wide estimate) and VoicePaceRampFullSamples (purely voice-specific).
-    internal static double EffectiveCharsPerSecond(
-        Dictionary<string, VoicePace> voicePaces, string voice, double fallbackCharsPerSecond)
-    {
-        if (!voicePaces.TryGetValue(voice, out var pace) || pace.SampleCount <= VoicePaceRampStartSamples)
-            return fallbackCharsPerSecond;
-
-        var voiceCps = pace.CharsPerSecondAt100;
-        if (voiceCps <= 0) return fallbackCharsPerSecond;
-
-        var weight = pace.SampleCount >= VoicePaceRampFullSamples
-            ? 1.0
-            : (pace.SampleCount - VoicePaceRampStartSamples) / (double)(VoicePaceRampFullSamples - VoicePaceRampStartSamples);
-
-        return weight * voiceCps + (1 - weight) * fallbackCharsPerSecond;
-    }
+    //
+    // Per-voice speaking pace is learned by VoicePaceModel (see that file) — a small
+    // ridge regression over paragraph features (char/sentence/comma counts), refit from
+    // scratch each job from every VoicePaceSample row logged so far. See the ModelFor
+    // helper and summary table above, and the RecordSampleAsync calls below that log
+    // each synthesis attempt as a new raw sample.
 
     private static string BuildEntrySsml(string text, string voiceName, string lang, double rate)
     {

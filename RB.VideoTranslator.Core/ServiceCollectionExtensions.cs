@@ -48,6 +48,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<ISpeakerSampleExtractorService, SpeakerSampleExtractorService>();
         services.AddScoped<IAudioMixerService, AudioMixerService>();
         services.AddScoped<IVideoMuxerService, VideoMuxerService>();
+        services.AddScoped<IUserPrompt, ConsoleUserPrompt>();
         services.AddScoped<IPipelineOrchestrator, PipelineOrchestrator>();
 
         services.AddSingleton<IAzureSpeechEngine, AzureSpeechEngine>();

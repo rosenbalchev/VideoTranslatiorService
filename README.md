@@ -193,10 +193,10 @@ Completed  ✓
 |--------|----------|
 | `Enums` | `JobState` — full state machine from `Queued` to `Completed` / `Failed` |
 | `Consts` | `PipelineOptionsDefaults` — `appsettings.json` section name |
-| `Dbo` | `VideoJob` — root entity, tracks all file paths and current pipeline state. `VoicePaceStat` — per-voice Azure TTS speaking-pace stats, learned across sessions |
-| `Models` | `PipelineOptions`, `LanguageResult` — externally visible pipeline configuration/results |
+| `Dbo` | `VideoJob` — root entity, tracks all file paths and current pipeline state. `VoicePaceSample` — one raw logged observation of a synthesised subtitle paragraph, per voice |
+| `Models` | `PipelineOptions`, `LanguageResult`, `TextFeatures` — externally visible pipeline configuration/results, and the paragraph feature vector (char/word/sentence/comma counts) used for voice-pace prediction |
 | `Exceptions` | `StepNotImplementedException` |
-| `Interfaces` | All service contracts (`IJobService`, `IMediaSeparatorService`, `IVttExtractorService`, `IVoiceRemoverService`, `IVttTranslatorService`, `IVttToAzureTtsService`, `IAudioMixerService`, `IVideoMuxerService`, `IPipelineOrchestrator`, `IAzureSpeechEngine`, `IAzureChatEngine`, `IProcessRunner`, `IFileSystem`, `IVideoJobRepository`, `IVoicePaceRepository`, `IPipelineRunner`) |
+| `Interfaces` | All service contracts (`IJobService`, `IMediaSeparatorService`, `IVttExtractorService`, `IVoiceRemoverService`, `IVttTranslatorService`, `IVttToAzureTtsService`, `IAudioMixerService`, `IVideoMuxerService`, `IPipelineOrchestrator`, `IAzureSpeechEngine`, `IAzureChatEngine`, `IProcessRunner`, `IFileSystem`, `IUserPrompt`, `IVideoJobRepository`, `IVoicePaceRepository`, `IPipelineRunner`) |
 
 ### Data layer (`RB.VideoTranslator.Data`)
 
@@ -204,7 +204,7 @@ Completed  ✓
 |------|---------|
 | `AppDbContext` | EF Core SQLite context |
 | `VideoJobRepository` | Implements `IVideoJobRepository` — CRUD + resumable-job query |
-| `VoicePaceRepository` | Implements `IVoicePaceRepository` — accumulates/reads per-voice speaking-pace stats (`VoicePaceStats` table) |
+| `VoicePaceRepository` | Implements `IVoicePaceRepository` — appends/reads raw per-paragraph pace samples (`VoicePaceSamples` table) |
 
 ### Core (`RB.VideoTranslator.Core`)
 
@@ -215,14 +215,15 @@ Completed  ✓
 | `VttExtractorService` | WhisperX — transcribe audio to VTT, with speaker diarization + gender-estimate `NOTE` comments |
 | `VoiceRemoverService` | Demucs — separate vocals from music bed |
 | `VttTranslatorService` | GPT-4o-mini — translate VTT to target language |
-| `VttToAzureTtsService` | Azure TTS — synthesise WAV from translated VTT. Learns each voice's real chars/sec speaking pace from observed synthesis results (persisted via `IVoicePaceRepository`), so later entries — and later jobs — start closer to the correct prosody rate instead of relying on overrun retries every time |
+| `VttToAzureTtsService` | Azure TTS — synthesise WAV from translated VTT. Learns each voice's speaking pace via `VoicePaceModel` (see [Voice pace learning](#voice-pace-learning)), refit per job from every logged paragraph sample, so later entries — and later jobs — start closer to the correct prosody rate instead of relying on overrun retries every time |
 | `AudioMixerService` | ffmpeg amix — blend no_vocals + TTS audio |
 | `VideoMuxerService` | ffmpeg — mux video + all audio tracks + embedded subtitles |
-| `PipelineOrchestrator` | Drives the state machine; resets interrupted jobs on restart |
+| `PipelineOrchestrator` | Drives the state machine; resets interrupted jobs on restart. Optionally pauses after subtitle extraction for a human gender-review keypress (`PauseForGenderReview`, off by default) |
 | `AzureSpeechEngine` | Azure Speech SDK wrapper (injectable for testing) |
 | `AzureChatEngine` | Azure OpenAI `ChatClient` wrapper (injectable for testing) |
 | `DefaultProcessRunner` | `System.Diagnostics.Process` abstraction |
 | `PhysicalFileSystem` | File I/O abstraction |
+| `ConsoleUserPrompt` | Blocking console keypress abstraction (`IUserPrompt`), used by the gender-review pause |
 
 ---
 
@@ -244,6 +245,7 @@ Every option can come from `appsettings.json` (preferred) or be overridden on th
 | `--openai-deployment` | `AzureOpenAiDeployment` | `gpt-4o-mini` | Azure OpenAI deployment name |
 | `--target-lang` | `TranslationTargetLanguages` | `Bulgarian` | Comma-separated target languages |
 | `--female` | `UseFemaleVoice` | `false` | Use female Azure TTS voice |
+| *(none)* | `PauseForGenderReview` | `false` | Pause after subtitle extraction and wait for a keypress so you can review/correct the estimated per-speaker genders in the VTT's NOTE header before they're used to pick TTS voices (gender is a pitch-threshold heuristic — see `vtt_common.py` — and can misclassify voices near the male/female boundary). Requires an attended terminal |
 
 > **Voices are selected automatically** per language. The mapping lives in `PipelineOrchestrator.VoiceMap` — add an entry there to support additional languages.
 
@@ -262,21 +264,24 @@ dotnet test RB.VideoTranslator.slnx
 dotnet test RB.VideoTranslator.slnx --verbosity normal
 ```
 
-### Test coverage (266 tests)
+### Test coverage (282 tests)
 
 | Area | File | What is tested |
 |------|------|----------------|
 | `JobService` | `Core/JobServiceTests.cs` | File move, job creation, state transitions, error paths |
+| `PipelineOrchestrator` | `Core/PipelineOrchestratorTests.cs` | Gender-review pause: off by default, triggers + blocks before voice removal when enabled and speaker data is present, skipped when the VTT has no speaker data |
 | `MediaSeparatorService` | `Core/MediaSeparatorServiceTests.cs` | Path building, ffmpeg args, state update, missing-output error |
 | `VttExtractorService` | `Core/VttExtractorServiceTests.cs` | Whisper invocation, output path, state transition |
 | `VttTranslatorService` | `Core/VttTranslatorServiceTests.cs` | GPT chunking (50/call), system prompt contains target language, output path, state transition |
-| `VttToAzureTtsService` | `Core/VttToAzureTtsServiceTests.cs` | Per-entry SSML, `<prosody rate>` logic, overrun-retry, silence padding, WAV concatenation, retry on failure, silence fallback, per-voice pace learning + blending, persisted-history seeding |
+| `VttToAzureTtsService` | `Core/VttToAzureTtsServiceTests.cs` | Per-entry SSML, `<prosody rate>` logic, overrun-retry, silence padding, WAV concatenation, retry on failure, silence fallback, per-voice pace model wiring, persisted-history seeding |
+| `TextFeatureExtractor` | `Core/TextFeatureExtractorTests.cs` | Char/word/sentence/comma counts, empty/whitespace input, collapsed terminal punctuation |
+| `VoicePaceModel` | `Core/VoicePaceModelTests.cs` | Cold-start prediction matches the fallback formula exactly, convergence toward observed pace with enough samples, sentence-pause coefficient recovery, numerical stability with few/one sample(s) |
 | `VoiceRemoverService` | `Core/VoiceRemoverServiceTests.cs` | Demucs args, output path detection, state transition |
 | `AudioMixerService` | `Core/AudioMixerServiceTests.cs` | ffmpeg amix args, language-specific output path, state transition, missing-output error |
 | `VideoMuxerService` | `Core/VideoMuxerServiceTests.cs` | Multi-stream ffmpeg args, apad filter, Original/language metadata, subtitle codec (MP4/MKV), output folder |
 | `DefaultProcessRunner` | `Core/DefaultProcessRunnerTests.cs` | Linux CUDA library path resolution for subprocess `LD_LIBRARY_PATH` |
 | `VideoJobRepository` | `Data/VideoJobRepositoryTests.cs` | CRUD, state filtering, `UpdatedAt` timestamp |
-| `VoicePaceRepository` | `Data/VoicePaceRepositoryTests.cs` | Sample accumulation, per-voice tracking, invalid-sample rejection |
+| `VoicePaceRepository` | `Data/VoicePaceRepositoryTests.cs` | Raw sample append (not accumulation), per-voice tracking, invalid-sample rejection |
 
 ---
 
@@ -303,14 +308,81 @@ VideoJobs
   CreatedAt             TEXT
   UpdatedAt             TEXT
 
-VoicePaceStats
-  Voice           TEXT     PK — Azure voice name, e.g. "bg-BG-BorislavNeural"
-  TotalChars      REAL     accumulated across every recorded sample
-  TotalNaturalMs  REAL     accumulated natural-pace (rate=100%) duration; TotalChars / (TotalNaturalMs/1000) = learned chars/sec
-  SampleCount     INTEGER
-  LastRateUsed    REAL     prosody rate (%) used for the most recent sample — diagnostic only
-  UpdatedAt       TEXT
+VoicePaceSamples
+  Id            INTEGER  PK, autoincrement
+  Voice         TEXT     Azure voice name, e.g. "bg-BG-BorislavNeural"
+  CharCount     INTEGER  entry text length
+  WordCount     INTEGER
+  SentenceCount INTEGER  count of sentence-terminating punctuation (. ! ?), floored at 1
+  CommaCount    INTEGER
+  RateUsed      REAL     prosody rate (%) sent to Azure for this sample
+  ExpectedMs    INTEGER  subtitle window duration
+  ActualMs      INTEGER  measured synthesised audio duration
+  NaturalMs     REAL     ActualMs back-derived to rate=100% (ActualMs * RateUsed / 100)
+  CreatedAt     TEXT
 ```
+
+One row is appended per synthesis attempt (including overrun retries) — never
+mutated, never collapsed into a running sum. See
+[Voice pace learning](#voice-pace-learning) below.
+
+---
+
+## Voice pace learning
+
+`VttToAzureTtsService` (see [Core](#core-rbvideotranslatorcore)) predicts a
+prosody rate per subtitle paragraph from a small custom model,
+`VoicePaceModel`, fit per voice from every `VoicePaceSample` row logged so
+far (schema above). The model is refit from scratch each job — inside
+`SynthesisePerEntryAsync`'s preamble, right before that job's voices are
+used — rather than maintained incrementally; expected per-voice sample
+volume is small enough that a full refit is cheap, and it keeps the model
+trivial to re-derive if the feature set ever changes.
+
+**Two-stage model** (`RB.VideoTranslator.Core/Services/VoicePaceModel.cs`):
+
+1. **Baseline chars/sec** — a shrinkage-weighted average of this voice's own
+   observed total chars ÷ total natural (rate=100%) ms vs. the global
+   fallback (13 chars/sec), with the weight ramping from the fallback toward
+   the voice's own pace as its sample count grows.
+2. **Punctuation correction** — a ridge regression fit on the *residual*
+   left after subtracting the baseline's prediction:
+
+   ```
+   residual = naturalMs - charCount · (1000 / baselineCps)
+   residual ≈ c₀ + c₁·sentenceCount + c₂·commaCount
+   ```
+
+   regularized toward `[0, 0, 0]` (i.e. "no punctuation effect beyond the
+   baseline pace" is the prior), solved via a hand-written Gauss-Jordan
+   elimination — no external ML dependency.
+
+The model is deliberately split into these two stages rather than fit
+jointly as one `naturalMs ≈ β·[1, charCount, sentenceCount, commaCount]`
+regression. That single-stage version was tried first and turned out to be
+numerically unsound: real paragraphs rarely vary charCount down near zero,
+so an intercept term can trade off against the charCount slope almost for
+free, and — because the intercept/sentence terms are far more weakly
+regularized than the (large-scale) charCount coefficient — the jointly-fit
+charCount slope drifted well away from the voice's true pace even with
+hundreds of samples, corrupting the very quantity the model exists to learn.
+Fitting the baseline chars/sec separately with a simple, robust ratio
+estimator removes that degree of freedom entirely, so the punctuation-only
+regression that remains has no similarly dominant, poorly-conditioned
+competitor.
+
+**Prediction at synthesis time** (replaces a plain chars/sec division):
+
+```
+f         = TextFeatureExtractor.Extract(entry.Text)   // char/word/sentence/comma counts
+naturalMs = model.PredictNaturalMs(f)
+rate      = clamp(naturalMs / expectedMs * 100, MinRatePct, MaxRatePct)
+```
+
+Before any entry is synthesised, a summary table is logged — one row per
+voice this job will actually use, showing sample count, fitted coefficients,
+and effective chars/sec — so the learned state is visible without a
+separate DB query.
 
 ---
 

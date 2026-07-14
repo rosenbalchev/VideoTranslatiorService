@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using RB.VideoTranslator.Data.Context;
 using RB.VideoTranslator.Domain.Dbo;
 using RB.VideoTranslator.Domain.Interfaces;
+using RB.VideoTranslator.Domain.Models;
 
 namespace RB.VideoTranslator.Data.Repositories;
 
@@ -11,25 +12,32 @@ public sealed class VoicePaceRepository : IVoicePaceRepository
 
     public VoicePaceRepository(AppDbContext db) => _db = db;
 
-    public async Task<IReadOnlyDictionary<string, VoicePaceStat>> GetAllAsync(CancellationToken ct = default) =>
-        await _db.VoicePaceStats.AsNoTracking().ToDictionaryAsync(s => s.Voice, ct);
+    public async Task<IReadOnlyList<VoicePaceSample>> GetAllSamplesAsync(CancellationToken ct = default) =>
+        await _db.VoicePaceSamples.AsNoTracking().ToListAsync(ct);
 
-    public async Task RecordSampleAsync(string voice, int textLength, double rate, int actualMs, CancellationToken ct = default)
+    public async Task RecordSampleAsync(
+        string voice,
+        TextFeatures features,
+        double rate,
+        int expectedMs,
+        int actualMs,
+        CancellationToken ct = default)
     {
-        if (textLength <= 0 || actualMs <= 0 || rate <= 0) return;
+        if (features.CharCount <= 0 || actualMs <= 0 || rate <= 0) return;
 
-        var stat = await _db.VoicePaceStats.FindAsync([voice], ct);
-        if (stat is null)
+        _db.VoicePaceSamples.Add(new VoicePaceSample
         {
-            stat = new VoicePaceStat { Voice = voice };
-            _db.VoicePaceStats.Add(stat);
-        }
-
-        stat.TotalChars     += textLength;
-        stat.TotalNaturalMs += actualMs * rate / 100.0;
-        stat.SampleCount++;
-        stat.LastRateUsed = rate;
-        stat.UpdatedAt = DateTime.UtcNow;
+            Voice         = voice,
+            CharCount     = features.CharCount,
+            WordCount     = features.WordCount,
+            SentenceCount = features.SentenceCount,
+            CommaCount    = features.CommaCount,
+            RateUsed      = rate,
+            ExpectedMs    = expectedMs,
+            ActualMs      = actualMs,
+            NaturalMs     = actualMs * rate / 100.0,
+            CreatedAt     = DateTime.UtcNow,
+        });
 
         await _db.SaveChangesAsync(ct);
     }
