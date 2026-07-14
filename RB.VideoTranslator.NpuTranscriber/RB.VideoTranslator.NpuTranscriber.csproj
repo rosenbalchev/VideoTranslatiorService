@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- Deliberately its own executable, not a class embedded in RB.VideoTranslator.Core:
+         1. Windows ML's C# API (Microsoft.Windows.AI.MachineLearning) requires a Windows-specific
+            TFM at compile time — Core stays plain net10.0 so it still builds on Linux/macOS.
+         2. Process isolation here is load-bearing, not just tidy layering: ExecutionProviderCatalog
+            has been observed to segfault (a native access violation, not a catchable .NET
+            exception) when the OS has a stale/mismatched system Windows ML component. Running
+            this in its own process means a crash here can never take down the main pipeline —
+            WhisperOnnxTranscriberService.cs just sees this process exit abnormally and falls
+            back to DirectML/CPU in-process.
+         3. Microsoft.Windows.AI.MachineLearning bundles its own onnxruntime.dll + DirectML.dll,
+            which would conflict with Microsoft.ML.OnnxRuntime.DirectML (referenced by Core) if
+            both landed in one project's output — see Core's .csproj comment. -->
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>RB.VideoTranslator.NpuTranscriber</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Windows.AI.MachineLearning" Version="2.*" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\RB.VideoTranslator.WhisperOnnx\RB.VideoTranslator.WhisperOnnx.csproj" />
+  </ItemGroup>
+
+</Project>

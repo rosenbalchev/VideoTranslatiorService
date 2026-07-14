@@ -1,15 +1,19 @@
 using RB.VideoTranslator.Domain.Dbo;
+using RB.VideoTranslator.Domain.Models;
 
 namespace RB.VideoTranslator.Domain.Interfaces;
 
 public interface IVoicePaceRepository
 {
-    /// <summary>Loads accumulated pace stats for every voice recorded so far, keyed by voice name.</summary>
-    Task<IReadOnlyDictionary<string, VoicePaceStat>> GetAllAsync(CancellationToken ct = default);
+    /// <summary>Loads every recorded sample for every voice, raw — no aggregation.</summary>
+    Task<IReadOnlyList<VoicePaceSample>> GetAllSamplesAsync(CancellationToken ct = default);
 
-    /// <summary>
-    /// Accumulates one synthesis sample into <paramref name="voice"/>'s running stats,
-    /// creating the row if this is the first sample recorded for that voice.
-    /// </summary>
-    Task RecordSampleAsync(string voice, int textLength, double rate, int actualMs, CancellationToken ct = default);
+    /// <summary>Appends one raw synthesis sample for <paramref name="voice"/>.</summary>
+    Task RecordSampleAsync(
+        string voice,
+        TextFeatures features,
+        double rate,
+        int expectedMs,
+        int actualMs,
+        CancellationToken ct = default);
 }

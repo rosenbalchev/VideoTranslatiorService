@@ -58,5 +58,27 @@
       "Same 2.5.1 pin as CUDA — 2.6+ requires torchcodec which has no Windows build.",
       "macOS has no CUDA hardware, so it always installs this set, but from the default PyPI index (no --index-url) since download.pytorch.org/whl/cpu does not publish macOS wheels."
     ]
+  },
+  "onnx": {
+    "_comment": "Used only by scripts/export_onnx_models.{bat,sh} — an optional, separate step run after install.{bat,sh}, not part of the base install. Exports Whisper to ONNX for RB.VideoTranslator.WhisperOnnx (native C#, see that project's .csproj) instead of being locked to CTranslate2's CUDA-or-CPU-only backend. Diarization (pyannote/speechbrain) is NOT converted — it still runs on whisperx/torch regardless of this flag. Nothing Python-side runs inference against the exported model anymore, so unlike before this section has no runtime execution-provider package to install — see 'dotnet.notes' below for how the C# side handles GPU/NPU/CPU provider selection instead.",
+    "whisperModel": "openai/whisper-medium",
+    "exportPackages": [
+      "optimum",
+      "optimum-onnx",
+      "onnx",
+      "onnxruntime==1.20.1"
+    ],
+    "notes": [
+      "onnxruntime pinned to 1.20.1 for the export step — onnxruntime 1.27.0 (latest as of writing) has a bug in transformers/io_binding_helper.py: TypeHelper.ort_type_to_torch_type() builds its ort-to-torch dtype map unconditionally on every call, including a 'tensor(int4)': torch.int4 entry. torch 2.5.1 (pinned above) has no torch.int4 attribute (that's a newer torch dtype), so merely loading any ORTModel via ORTModelForSpeechSeq2Seq.from_pretrained() raises AttributeError: module 'torch' has no attribute 'int4' — regardless of whether int4 tensors are ever used. 1.20.1 predates this and works cleanly.",
+      "Export MUST run with plain 'onnxruntime' installed, not 'onnxruntime-directml' — optimum's fix_dynamic_axes step (run right after export) gates on is_onnxruntime_available(), which checks importlib.metadata for a package literally named 'onnxruntime'. onnxruntime-directml is a separate PyPI distribution that happens to provide the same importable 'onnxruntime' module, but doesn't satisfy that metadata check, so export fails with a misleading 'pip install onnx onnxruntime' error even though an onnxruntime-compatible package IS installed.",
+      "optimum 2.2.0 removed the old 'optimum[exporters]' extra — ONNX export moved to the separate 'optimum-onnx' package (pip install optimum-onnx), not an extras flag.",
+      "ORTModelForSpeechSeq2Seq.save_pretrained() only writes the ONNX graphs + config — it does NOT save the tokenizer/feature-extractor. The export script must separately load WhisperProcessor.from_pretrained(whisperModel) and call processor.save_pretrained() into the same output folder, or the exported folder can't be loaded standalone later."
+    ]
+  },
+  "dotnet": {
+    "notes": [
+      "RB.VideoTranslator.WhisperOnnx (mel spectrogram + BPE tokenizer + decode loop) deliberately references only Microsoft.ML.OnnxRuntime.Managed (types, no bundled native runtime), never plain Microsoft.ML.OnnxRuntime or a provider-specific package — every onnxruntime NuGet flavor (Microsoft.ML.OnnxRuntime, .DirectML, Intel.ML.OnnxRuntime.OpenVino, ...) ships its own runtimes/win-x64/native/onnxruntime.dll under the same path, so referencing two of them in one project (or one consumer's transitive closure) makes NuGet silently pick one at asset-resolution time with no build warning — observed picking the CPU-only build over DirectML's, silently disabling GPU acceleration. Each consumer brings exactly one native provider package: RB.VideoTranslator.Core (WhisperOnnxTranscriberService, DirectML GPU→CPU) uses Microsoft.ML.OnnxRuntime.DirectML; a separate NPU-only executable would need to use Intel.ML.OnnxRuntime.OpenVino instead, never both in the same project.",
+      "Confirmed on this dev machine's hardware (Intel AI Boost NPU + NVIDIA/Intel GPUs): DirectML's device_filter/device enumeration never surfaces the NPU at all (it's not a D3D12/WDDM device on this hardware) — only Intel's OpenVINO execution provider (device_type='NPU') can reach it. OpenVINO can't see the NVIDIA GPU either. There is no single provider that covers NPU+all-GPU-vendors the way the old Python onnxruntime-directml path assumed."
+    ]
   }
 }

@@ -8,7 +8,7 @@ public class AppDbContext : DbContext
     public AppDbContext(DbContextOptions<AppDbContext> options) : base(options) { }
 
     public DbSet<VideoJob> VideoJobs => Set<VideoJob>();
-    public DbSet<VoicePaceStat> VoicePaceStats => Set<VoicePaceStat>();
+    public DbSet<VoicePaceSample> VoicePaceSamples => Set<VoicePaceSample>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -18,9 +18,10 @@ public class AppDbContext : DbContext
             entity.Property(e => e.State).HasConversion<string>();
         });
 
-        modelBuilder.Entity<VoicePaceStat>(entity =>
+        modelBuilder.Entity<VoicePaceSample>(entity =>
         {
-            entity.HasKey(e => e.Voice);
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Id).ValueGeneratedOnAdd();
         });
     }
 }

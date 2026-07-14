@@ -43,7 +43,7 @@ public sealed class PipelineBootstrapper : IPipelineRunner
         var db = sp.GetRequiredService<AppDbContext>();
         await db.Database.EnsureCreatedAsync();
         await MigrateSchemaAsync(db);
-        await EnsureVoicePaceTableAsync(db);
+        await EnsureVoicePaceSamplesTableAsync(db);
 
         // Setup folder structure and normalize configuration
         SetupFolders();
@@ -109,32 +109,35 @@ public sealed class PipelineBootstrapper : IPipelineRunner
         }
     }
 
-    // VoicePaceStats is a new, independent table added after EnsureCreatedAsync's
-    // all-or-nothing check was already satisfied for existing installs (it only creates
-    // the schema when the database file doesn't exist yet, not per-table). Since it has
-    // no relation to VideoJobs, creating it directly is simpler and safer than the
-    // recreate-the-whole-database approach MigrateSchemaAsync uses for column changes.
-    private static async Task EnsureVoicePaceTableAsync(AppDbContext db)
+    // VoicePace tables are independent of EnsureCreatedAsync's all-or-nothing check
+    // (it only creates the schema when the database file doesn't exist yet, not per-table).
+    // VoicePaceStats (a running-sum accumulator) has been superseded by VoicePaceSamples
+    // (a raw per-paragraph log — see VttToAzureTtsService.VoicePaceModel, which refits a
+    // ridge regression from these rows per job instead of trusting a running average). Both
+    // are just cached pacing data (no user data), so the old table is dropped outright rather
+    // than migrated.
+    private static async Task EnsureVoicePaceSamplesTableAsync(AppDbContext db)
     {
+        var conn = db.Database.GetDbConnection();
+        await conn.OpenAsync();
+
+        await db.Database.ExecuteSqlRawAsync("""DROP TABLE IF EXISTS "VoicePaceStats";""");
+
         await db.Database.ExecuteSqlRawAsync("""
-            CREATE TABLE IF NOT EXISTS "VoicePaceStats" (
-                "Voice" TEXT NOT NULL CONSTRAINT "PK_VoicePaceStats" PRIMARY KEY,
-                "TotalChars" REAL NOT NULL,
-                "TotalNaturalMs" REAL NOT NULL,
-                "SampleCount" INTEGER NOT NULL,
-                "LastRateUsed" REAL NOT NULL,
-                "UpdatedAt" TEXT NOT NULL
+            CREATE TABLE IF NOT EXISTS "VoicePaceSamples" (
+                "Id" INTEGER NOT NULL CONSTRAINT "PK_VoicePaceSamples" PRIMARY KEY AUTOINCREMENT,
+                "Voice" TEXT NOT NULL,
+                "CharCount" INTEGER NOT NULL,
+                "WordCount" INTEGER NOT NULL,
+                "SentenceCount" INTEGER NOT NULL,
+                "CommaCount" INTEGER NOT NULL,
+                "RateUsed" REAL NOT NULL,
+                "ExpectedMs" INTEGER NOT NULL,
+                "ActualMs" INTEGER NOT NULL,
+                "NaturalMs" REAL NOT NULL,
+                "CreatedAt" TEXT NOT NULL
             );
             """);
-
-        // Additive column for installs that already created VoicePaceStats without it
-        // (this file shipped before LastRateUsed was added).
-        try
-        {
-            await db.Database.ExecuteSqlRawAsync(
-                """ALTER TABLE "VoicePaceStats" ADD COLUMN "LastRateUsed" REAL NOT NULL DEFAULT 0;""");
-        }
-        catch { /* column already exists — best-effort */ }
     }
 
     /// <summary>

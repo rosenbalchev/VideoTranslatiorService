@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!-- NuGet packaging -->
+    <IsPackable>true</IsPackable>
+    <PackageId>RB.VideoTranslator.WhisperOnnx</PackageId>
+    <Version>1.0.0</Version>
+    <Authors>Rosen Balchev</Authors>
+    <Description>Provider-agnostic Whisper ONNX inference (mel spectrogram, tokenizer, decode loop) shared between the DirectML/CPU transcriber and the OpenVINO NPU transcriber executable. Deliberately has no dependency on any onnxruntime execution-provider package (Microsoft.ML.OnnxRuntime.DirectML / Intel.ML.OnnxRuntime.OpenVino) — both ship a same-named runtimes/win-x64/native/onnxruntime.dll and conflict if referenced together, so provider selection lives in the two separate consumers instead.</Description>
+    <PackageTags>video;translation;onnx;whisper</PackageTags>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <RepositoryType>git</RepositoryType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Managed-only: just the C# API surface (InferenceSession, Tensor<T>, ...), no bundled
+         native runtime. Consumers (WhisperOnnxTranscriberService via
+         Microsoft.ML.OnnxRuntime.DirectML, the NPU exe via Intel.ML.OnnxRuntime.OpenVino) each
+         bring their own native runtime package. Referencing plain Microsoft.ML.OnnxRuntime here
+         instead would bundle a CPU-only onnxruntime.dll that collides with the consumer's
+         DirectML/OpenVINO-flavored one at the same runtimes/win-x64/native/ path — NuGet
+         resolves that silently in favor of whichever wins asset selection (observed: the CPU
+         one), so AppendExecutionProvider_DML/_OpenVINO() fails at runtime with no build error. -->
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.Managed" Version="1.24.*" />
+    <PackageReference Include="Microsoft.ML.Tokenizers" Version="2.0.*" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="RB.VideoTranslator.Tests" />
+  </ItemGroup>
+
+</Project>

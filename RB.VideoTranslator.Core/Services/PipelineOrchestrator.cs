@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -23,6 +24,7 @@ public sealed class PipelineOrchestrator : IPipelineOrchestrator
     private readonly IAudioMixerService _audioMixer;
     private readonly IVideoMuxerService _videoMuxer;
     private readonly IFileSystem _fs;
+    private readonly IUserPrompt _userPrompt;
     private readonly IOptions<PipelineOptions> _options;
     private readonly ILogger<PipelineOrchestrator> _logger;
 
@@ -38,6 +40,7 @@ public sealed class PipelineOrchestrator : IPipelineOrchestrator
         IAudioMixerService audioMixer,
         IVideoMuxerService videoMuxer,
         IFileSystem fs,
+        IUserPrompt userPrompt,
         IOptions<PipelineOptions> options,
         ILogger<PipelineOrchestrator> logger)
     {
@@ -52,6 +55,7 @@ public sealed class PipelineOrchestrator : IPipelineOrchestrator
         _audioMixer     = audioMixer;
         _videoMuxer     = videoMuxer;
         _fs             = fs;
+        _userPrompt     = userPrompt;
         _options        = options;
         _logger         = logger;
     }
@@ -287,10 +291,22 @@ public sealed class PipelineOrchestrator : IPipelineOrchestrator
             case JobState.AudioExtracted:
                 await _jobService.TransitionStateAsync(job.Id, JobState.ExtractingVtt, ct: ct);
                 var extracting = (await _jobService.GetJobAsync(job.Id, ct))!;
-                await _vttExtractor.ExtractAsync(extracting, options.PythonPath, options.EnableVoiceMarks, ct);
+                // Fixed convention matching scripts/export_onnx_models.{bat,sh}'s output location —
+                // not a separate appsettings key, so it always follows WorkingFolderPath.
+                var onnxModelPath = options.UseOnnxTranscription
+                    ? Path.Combine(options.WorkingFolderPath, "onnx-models", "whisper-medium")
+                    : null;
+                await _vttExtractor.ExtractAsync(
+                    extracting, options.PythonPath, options.EnableVoiceMarks,
+                    options.UseOnnxTranscription, onnxModelPath, options.FfmpegPath, ct);
                 break;
 
             case JobState.VttExtracted:
+                // Still in VttExtracted (not yet transitioned) while paused, so a restart
+                // mid-pause simply re-enters this case and pauses again — nothing is lost.
+                if (options.PauseForGenderReview)
+                    await PauseForGenderReviewAsync(job, ct);
+
                 // Voice removal runs here — it only needs the extracted audio and
                 // is independent of subtitles, so it runs once before any language work.
                 await _jobService.TransitionStateAsync(job.Id, JobState.RemovingVoice, ct: ct);
@@ -402,5 +418,38 @@ public sealed class PipelineOrchestrator : IPipelineOrchestrator
                     muxing, options.FfmpegPath, options.OutputFolderPath, languageResults, ct);
                 break;
         }
+    }
+
+    // Pauses right after subtitle extraction so a human can review the per-speaker gender
+    // estimates written to job.VttFilePath's NOTE header (see vtt_common.py's pitch-threshold
+    // heuristic, which can misclassify voices near the male/female boundary) and hand-correct
+    // the NOTE line before it's baked into TTS voice assignment (see SpeakerVoiceAssigner)
+    // downstream. Gated by PipelineOptions.PauseForGenderReview (default off).
+    private async Task PauseForGenderReviewAsync(VideoJob job, CancellationToken ct)
+    {
+        if (string.IsNullOrEmpty(job.VttFilePath)) return;
+
+        var vttContent = await _fs.ReadAllTextAsync(job.VttFilePath, ct);
+        var speakerRows = SpeakerSampleExtractorService.ParseSpeakerRows(VttTranslatorService.ExtractLeadingNote(vttContent));
+
+        if (speakerRows.Count == 0)
+        {
+            _logger.LogInformation(
+                "PauseForGenderReview is enabled but {Vtt} has no speaker/gender data — skipping pause.",
+                job.VttFilePath);
+            return;
+        }
+
+        _logger.LogInformation("Pausing for gender review — job {Id} ({File})", job.Id, job.OriginalFileName);
+
+        var message = new StringBuilder()
+            .AppendLine()
+            .AppendLine($"=== Gender review: {job.OriginalFileName} ===")
+            .AppendLine($"VTT: {job.VttFilePath}");
+        foreach (var row in speakerRows)
+            message.AppendLine($"  {row.Label}: {row.Gender} ({row.Start:hh\\:mm\\:ss}-{row.End:hh\\:mm\\:ss})");
+        message.Append("Edit the NOTE header above in the VTT file now if any gender looks wrong, then press any key to continue...");
+
+        await _userPrompt.WaitForKeyPressAsync(message.ToString(), ct);
     }
 }

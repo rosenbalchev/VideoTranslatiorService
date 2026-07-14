@@ -41,12 +41,14 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IFileSystem, PhysicalFileSystem>();
         services.AddScoped<IMediaSeparatorService, MediaSeparatorService>();
         services.AddScoped<IVttExtractorService, VttExtractorService>();
+        services.AddScoped<IWhisperOnnxTranscriberService, WhisperOnnxTranscriberService>();
         services.AddScoped<IVttTranslatorService, VttTranslatorService>();
         services.AddScoped<IVttToAzureTtsService, VttToAzureTtsService>();
         services.AddScoped<IVoiceRemoverService, VoiceRemoverService>();
         services.AddScoped<ISpeakerSampleExtractorService, SpeakerSampleExtractorService>();
         services.AddScoped<IAudioMixerService, AudioMixerService>();
         services.AddScoped<IVideoMuxerService, VideoMuxerService>();
+        services.AddScoped<IUserPrompt, ConsoleUserPrompt>();
         services.AddScoped<IPipelineOrchestrator, PipelineOrchestrator>();
 
         services.AddSingleton<IAzureSpeechEngine, AzureSpeechEngine>();

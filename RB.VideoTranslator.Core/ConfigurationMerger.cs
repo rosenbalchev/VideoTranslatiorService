@@ -24,6 +24,7 @@ public static class ConfigurationMerger
     /// <param name="targetLanguages">CLI --target-lang argument.</param>
     /// <param name="venvPath">CLI --venv argument.</param>
     /// <param name="useFemaleVoice">CLI --female flag.</param>
+    /// <param name="useOnnxTranscription">CLI --onnx-transcription flag.</param>
     public static void MergeCliOptions(
         PipelineOptions options,
         string? workFolder = null,
@@ -36,7 +37,8 @@ public static class ConfigurationMerger
         string? openAiDeployment = null,
         string? targetLanguages = null,
         string? venvPath = null,
-        bool? useFemaleVoice = null)
+        bool? useFemaleVoice = null,
+        bool? useOnnxTranscription = null)
     {
         if (!string.IsNullOrEmpty(workFolder))
             options.WorkingFolderPath = workFolder;
@@ -62,6 +64,9 @@ public static class ConfigurationMerger
 
         if (useFemaleVoice.HasValue)
             options.UseFemaleVoice = useFemaleVoice.Value;
+
+        if (useOnnxTranscription.HasValue)
+            options.UseOnnxTranscription = useOnnxTranscription.Value;
 
         // Venv: explicit CLI venv arg > config VenvPath > default <WorkingFolderPath>\rb.video.translator
         if (!string.IsNullOrEmpty(venvPath))

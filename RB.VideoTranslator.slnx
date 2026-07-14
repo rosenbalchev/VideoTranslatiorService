@@ -2,6 +2,8 @@
   <Project Path="RB.VideoTranslator.Domain\RB.VideoTranslator.Domain.csproj" />
   <Project Path="RB.VideoTranslator.Data\RB.VideoTranslator.Data.csproj" />
   <Project Path="RB.VideoTranslator.Core\RB.VideoTranslator.Core.csproj" />
+  <Project Path="RB.VideoTranslator.WhisperOnnx\RB.VideoTranslator.WhisperOnnx.csproj" />
+  <Project Path="RB.VideoTranslator.NpuTranscriber\RB.VideoTranslator.NpuTranscriber.csproj" />
   <Project Path="RB.VideoTranslator.CLI\RB.VideoTranslator.CLI.csproj" />
   <Project Path="RB.VideoTranslator.Tests\RB.VideoTranslator.Tests.csproj" />
 </Solution>
