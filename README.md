@@ -168,8 +168,10 @@ WorkingFolderPath\input
 [TranslatingVtt]        GPT-4o-mini — translate VTT (50 entries/call)            │
     │  │                                                                          │
 [SynthesisingAzureTts]  Azure Neural TTS — synthesise translated VTT → WAV       │
-                         • Per-entry synthesis, one API call per subtitle entry   │
-                         • <prosody rate> adjusts speed to fit each window        │
+                         • Per-entry synthesis, one API call per subtitle entry,  │
+                           always requested at Azure's natural 100% rate          │
+                         • ffmpeg atempo stretches each clip to fit its subtitle  │
+                           window (temp files under ProcessingFolderPath\tts_tmp) │
                          • Absolute-timestamp leading silence keeps sync          │
                          • Retries up to 3 times on transient SDK timeouts        │
     │  │                                                                          │
@@ -193,10 +195,10 @@ Completed  ✓
 |--------|----------|
 | `Enums` | `JobState` — full state machine from `Queued` to `Completed` / `Failed` |
 | `Consts` | `PipelineOptionsDefaults` — `appsettings.json` section name |
-| `Dbo` | `VideoJob` — root entity, tracks all file paths and current pipeline state. `VoicePaceStat` — per-voice Azure TTS speaking-pace stats, learned across sessions |
+| `Dbo` | `VideoJob` — root entity, tracks all file paths and current pipeline state |
 | `Models` | `PipelineOptions`, `LanguageResult` — externally visible pipeline configuration/results |
 | `Exceptions` | `StepNotImplementedException` |
-| `Interfaces` | All service contracts (`IJobService`, `IMediaSeparatorService`, `IVttExtractorService`, `IVoiceRemoverService`, `IVttTranslatorService`, `IVttToAzureTtsService`, `IAudioMixerService`, `IVideoMuxerService`, `IPipelineOrchestrator`, `IAzureSpeechEngine`, `IAzureChatEngine`, `IProcessRunner`, `IFileSystem`, `IVideoJobRepository`, `IVoicePaceRepository`, `IPipelineRunner`) |
+| `Interfaces` | All service contracts (`IJobService`, `IMediaSeparatorService`, `IVttExtractorService`, `IVoiceRemoverService`, `IVttTranslatorService`, `IVttToAzureTtsService`, `IAudioMixerService`, `IVideoMuxerService`, `IPipelineOrchestrator`, `IAzureSpeechEngine`, `IAzureChatEngine`, `IProcessRunner`, `IFileSystem`, `IVideoJobRepository`, `IPipelineRunner`) |
 
 ### Data layer (`RB.VideoTranslator.Data`)
 
@@ -204,7 +206,6 @@ Completed  ✓
 |------|---------|
 | `AppDbContext` | EF Core SQLite context |
 | `VideoJobRepository` | Implements `IVideoJobRepository` — CRUD + resumable-job query |
-| `VoicePaceRepository` | Implements `IVoicePaceRepository` — accumulates/reads per-voice speaking-pace stats (`VoicePaceStats` table) |
 
 ### Core (`RB.VideoTranslator.Core`)
 
@@ -215,7 +216,7 @@ Completed  ✓
 | `VttExtractorService` | WhisperX — transcribe audio to VTT, with speaker diarization + gender-estimate `NOTE` comments |
 | `VoiceRemoverService` | Demucs — separate vocals from music bed |
 | `VttTranslatorService` | GPT-4o-mini — translate VTT to target language |
-| `VttToAzureTtsService` | Azure TTS — synthesise WAV from translated VTT. Learns each voice's real chars/sec speaking pace from observed synthesis results (persisted via `IVoicePaceRepository`), so later entries — and later jobs — start closer to the correct prosody rate instead of relying on overrun retries every time |
+| `VttToAzureTtsService` | Azure TTS — synthesise WAV from translated VTT. Always requests Azure's natural 100% speaking rate per entry, saves the raw clip to a temp file under the job's working folder, then uses ffmpeg's `atempo` filter to stretch/compress it to exactly fit its subtitle window |
 | `AudioMixerService` | ffmpeg amix — blend no_vocals + TTS audio |
 | `VideoMuxerService` | ffmpeg — mux video + all audio tracks + embedded subtitles |
 | `PipelineOrchestrator` | Drives the state machine; resets interrupted jobs on restart |
@@ -262,7 +263,7 @@ dotnet test RB.VideoTranslator.slnx
 dotnet test RB.VideoTranslator.slnx --verbosity normal
 ```
 
-### Test coverage (266 tests)
+### Test coverage (248 tests)
 
 | Area | File | What is tested |
 |------|------|----------------|
@@ -270,13 +271,12 @@ dotnet test RB.VideoTranslator.slnx --verbosity normal
 | `MediaSeparatorService` | `Core/MediaSeparatorServiceTests.cs` | Path building, ffmpeg args, state update, missing-output error |
 | `VttExtractorService` | `Core/VttExtractorServiceTests.cs` | Whisper invocation, output path, state transition |
 | `VttTranslatorService` | `Core/VttTranslatorServiceTests.cs` | GPT chunking (50/call), system prompt contains target language, output path, state transition |
-| `VttToAzureTtsService` | `Core/VttToAzureTtsServiceTests.cs` | Per-entry SSML, `<prosody rate>` logic, overrun-retry, silence padding, WAV concatenation, retry on failure, silence fallback, per-voice pace learning + blending, persisted-history seeding |
+| `VttToAzureTtsService` | `Core/VttToAzureTtsServiceTests.cs` | Per-entry SSML (always 100% rate, no `<prosody>`), ffmpeg `atempo` tempo-stretch invocation, temp working folder creation, silence padding, WAV concatenation, retry on failure, silence fallback |
 | `VoiceRemoverService` | `Core/VoiceRemoverServiceTests.cs` | Demucs args, output path detection, state transition |
 | `AudioMixerService` | `Core/AudioMixerServiceTests.cs` | ffmpeg amix args, language-specific output path, state transition, missing-output error |
 | `VideoMuxerService` | `Core/VideoMuxerServiceTests.cs` | Multi-stream ffmpeg args, apad filter, Original/language metadata, subtitle codec (MP4/MKV), output folder |
 | `DefaultProcessRunner` | `Core/DefaultProcessRunnerTests.cs` | Linux CUDA library path resolution for subprocess `LD_LIBRARY_PATH` |
 | `VideoJobRepository` | `Data/VideoJobRepositoryTests.cs` | CRUD, state filtering, `UpdatedAt` timestamp |
-| `VoicePaceRepository` | `Data/VoicePaceRepositoryTests.cs` | Sample accumulation, per-voice tracking, invalid-sample rejection |
 
 ---
 
@@ -302,14 +302,6 @@ VideoJobs
   ErrorMessage          TEXT
   CreatedAt             TEXT
   UpdatedAt             TEXT
-
-VoicePaceStats
-  Voice           TEXT     PK — Azure voice name, e.g. "bg-BG-BorislavNeural"
-  TotalChars      REAL     accumulated across every recorded sample
-  TotalNaturalMs  REAL     accumulated natural-pace (rate=100%) duration; TotalChars / (TotalNaturalMs/1000) = learned chars/sec
-  SampleCount     INTEGER
-  LastRateUsed    REAL     prosody rate (%) used for the most recent sample — diagnostic only
-  UpdatedAt       TEXT
 ```
 
 ---

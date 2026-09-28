@@ -22,7 +22,7 @@ public sealed class VttToAzureTtsService : IVttToAzureTtsService
     private readonly IVideoJobRepository _repo;
     private readonly IFileSystem _fs;
     private readonly IAzureSpeechEngine _engine;
-    private readonly IVoicePaceRepository _voicePaceRepo;
+    private readonly IProcessRunner _processRunner;
     private readonly ILogger<VttToAzureTtsService> _logger;
 
     private static readonly Regex TimeLineRx = new(
@@ -37,13 +37,13 @@ public sealed class VttToAzureTtsService : IVttToAzureTtsService
         IVideoJobRepository repo,
         IFileSystem fs,
         IAzureSpeechEngine engine,
-        IVoicePaceRepository voicePaceRepo,
+        IProcessRunner processRunner,
         ILogger<VttToAzureTtsService> logger)
     {
         _repo          = repo;
         _fs            = fs;
         _engine        = engine;
-        _voicePaceRepo = voicePaceRepo;
+        _processRunner = processRunner;
         _logger        = logger;
     }
 
@@ -54,6 +54,7 @@ public sealed class VttToAzureTtsService : IVttToAzureTtsService
         string voiceName = "en-US-Ava:DragonHDLatestNeural",
         string lang = "en-US",
         IReadOnlyDictionary<string, string>? speakerVoices = null,
+        string ffmpegPath = "ffmpeg",
         CancellationToken ct = default)
     {
         if (string.IsNullOrEmpty(job.TranslatedVttFilePath))
@@ -76,23 +77,21 @@ public sealed class VttToAzureTtsService : IVttToAzureTtsService
         var ssmlPath = Path.Combine(job.ProcessingFolderPath, $"{baseName}_azure_tts.ssml");
         await _fs.WriteAllTextAsync(ssmlPath, fullSsml, ct);
 
-        // Compute chars/sec from this file's own subtitle timing rather than a hardcoded guess.
-        var totalChars = entries.Sum(e => e.Text.Length);
-        var totalMs    = entries.Sum(e => e.EndMs - e.StartMs);
-        var charsPerSecond = totalMs > 0
-            ? totalChars / (totalMs / 1000.0)
-            : FallbackCharsPerSecond;
-
         _logger.LogInformation(
-            "Synthesising Azure TTS audio ({Voice}/{Lang}) from {Vtt} — {Count} entries. " +
-            "Subtitle avg pace: {Cps:F1} chars/sec. SSML: {Ssml}",
-            voiceName, lang, job.TranslatedVttFilePath, entries.Count, charsPerSecond, ssmlPath);
+            "Synthesising Azure TTS audio ({Voice}/{Lang}) from {Vtt} — {Count} entries. SSML: {Ssml}",
+            voiceName, lang, job.TranslatedVttFilePath, entries.Count, ssmlPath);
 
-        // One TTS call per subtitle entry. Leading silence per entry is derived from the
-        // absolute original timestamp so the audio track aligns with the source video.
+        // One TTS call per subtitle entry, always requested at Azure's natural 100% rate.
+        // Leading silence per entry is derived from the absolute original timestamp so the
+        // audio track aligns with the source video. Any mismatch between the synthesised
+        // clip's natural duration and its subtitle window is corrected afterwards by
+        // stretching the clip's tempo with ffmpeg (see StretchToWindowAsync), rather than
+        // asking Azure to speak faster or slower.
         // The translated VTT is NOT rewritten — subtitle display times are kept identical
         // to the original so all language tracks share the same visual timing.
-        var audioData = await SynthesisePerEntryAsync(entries, endpointUrl, subscriptionKey, voiceName, lang, charsPerSecond, job.AudioChannels, speakerVoices, ct);
+        var ttsTempDir = Path.Combine(job.ProcessingFolderPath, "tts_tmp");
+        _fs.CreateDirectory(ttsTempDir);
+        var audioData = await SynthesisePerEntryAsync(entries, endpointUrl, subscriptionKey, voiceName, lang, job.AudioChannels, speakerVoices, ffmpegPath, ttsTempDir, ct);
 
         var outputWav = Path.Combine(job.ProcessingFolderPath, $"{baseName}_azure_tts.wav");
         await using var fileStream = _fs.Create(outputWav);
@@ -106,27 +105,24 @@ public sealed class VttToAzureTtsService : IVttToAzureTtsService
     }
 
     // ── Per-entry synthesis ───────────────────────────────────────────────────
-    // One TTS call per subtitle entry. Leading silence is computed from the absolute
-    // original timestamp so the audio track aligns with the source video.
-    // When TTS audio overruns its window, the excess is logged and curMs advances
-    // accordingly; the next entry's leading silence absorbs the difference.
+    // One TTS call per subtitle entry, always requested at Azure's natural 100% rate.
+    // Leading silence is computed from the absolute original timestamp so the audio
+    // track aligns with the source video. Any mismatch between the synthesised clip's
+    // natural duration and its subtitle window is corrected by stretching the clip's
+    // tempo with ffmpeg (see StretchToWindowAsync) rather than asking Azure for a
+    // different speaking rate.
 
     private const int MaxTtsRetries = 3;
 
-    // Extra attempts made when synthesised audio overruns its subtitle window. Each retry
-    // recalculates the prosody rate from the actual overrun ratio (measured audio duration,
-    // not the pre-synthesis chars/sec estimate), so it converges on the real window fit.
-    private const int MaxOverrunRetries = 2;
+    // Mismatch below this is not worth an ffmpeg round-trip.
+    private const int WindowToleranceMs = 100;
 
-    // Overrun below this is not worth a re-synthesis round-trip.
-    private const int OverrunToleranceMs = 100;
-
-    // Blends each voice's own observed pace (see VoicePace) into the pre-synthesis
-    // rate estimate once enough samples exist, ramping linearly from purely the
-    // file-wide estimate at VoicePaceRampStartSamples to purely the voice-specific
-    // one at VoicePaceRampFullSamples — a handful of entries is enough to converge.
-    internal const int VoicePaceRampStartSamples = 5;
-    internal const int VoicePaceRampFullSamples  = 10;
+    // ffmpeg's atempo filter is valid down to 0.5, but past MinTempoFactor/MaxTempoFactor
+    // speech starts sounding unnaturally slow or stops being intelligible — the same
+    // bounds the old prosody-rate approach used (see MinRatePct/MaxRatePct), just
+    // expressed as a tempo multiplier instead of a percentage.
+    internal const double MinTempoFactor = MinRatePct / 100.0;
+    internal const double MaxTempoFactor = MaxRatePct / 100.0;
 
     private async Task<byte[]> SynthesisePerEntryAsync(
         IReadOnlyList<VttEntry> entries,
@@ -134,9 +130,10 @@ public sealed class VttToAzureTtsService : IVttToAzureTtsService
         string subscriptionKey,
         string voiceName,
         string lang,
-        double charsPerSecond,
         int inputAudioChannels,
         IReadOnlyDictionary<string, string>? speakerVoices,
+        string ffmpegPath,
+        string tempDir,
         CancellationToken ct)
     {
         _logger.LogInformation("Synthesising {Count} entries one-by-one for precise sync", entries.Count);
@@ -156,32 +153,6 @@ public sealed class VttToAzureTtsService : IVttToAzureTtsService
                 ? v
                 : voiceName;
 
-        // Tracks each voice's own observed speaking pace, seeded from prior sessions
-        // (persisted per voice via IVoicePaceRepository) so the pre-synthesis rate
-        // estimate converges on what this voice actually needs instead of relying on
-        // the same overrun retries for every entry — including the first one, once
-        // enough history has accumulated for that voice across earlier jobs.
-        var persistedPaces = await _voicePaceRepo.GetAllAsync(ct);
-        var voicePaces = persistedPaces.ToDictionary(
-            kv => kv.Key,
-            kv => new VoicePace(kv.Value.TotalChars, kv.Value.TotalNaturalMs, kv.Value.SampleCount));
-
-        // Report what we know about each voice this run will actually use, before any
-        // synthesis happens, so it's visible whether a voice is starting cold or already
-        // has learned pace data from earlier sessions.
-        foreach (var voice in entries.Select(ResolveVoice).Distinct())
-        {
-            if (voicePaces.TryGetValue(voice, out var knownPace) && knownPace.SampleCount > 0)
-                _logger.LogInformation(
-                    "Voice {Voice}: known pace from {Samples} prior sample(s) (~{Cps:F1} chars/sec at 100% rate) — {Status}",
-                    voice, knownPace.SampleCount, knownPace.CharsPerSecondAt100,
-                    knownPace.SampleCount > VoicePaceRampStartSamples
-                        ? "using the learned estimate"
-                        : "still warming up, blended with the file-wide estimate");
-            else
-                _logger.LogInformation("Voice {Voice}: no prior pace history — starting from the file-wide estimate", voice);
-        }
-
         for (int i = 0; i < entries.Count; i++)
         {
             ct.ThrowIfCancellationRequested();
@@ -190,14 +161,11 @@ public sealed class VttToAzureTtsService : IVttToAzureTtsService
             var expectedMs = entry.EndMs - entry.StartMs;
             var entryVoice = ResolveVoice(entry);
 
-            var effectiveCps = EffectiveCharsPerSecond(voicePaces, entryVoice, charsPerSecond);
-            var rate          = SpeechRateFor(entry.Text, expectedMs, effectiveCps);
-
-            var ssml = BuildEntrySsml(entry.Text, entryVoice, lang, rate);
+            var ssml = BuildEntrySsml(entry.Text, entryVoice, lang);
 
             _logger.LogInformation(
-                "TTS entry {I}/{Total} [{Start}→{End}ms] voice={Voice} rate={Rate:F0}%",
-                i + 1, entries.Count, entry.StartMs, entry.EndMs, entryVoice, rate);
+                "TTS entry {I}/{Total} [{Start}→{End}ms] voice={Voice} (100% rate)",
+                i + 1, entries.Count, entry.StartMs, entry.EndMs, entryVoice);
 
             // Retry on transient Azure SDK timeouts (frame-interval watchdog fires ~3 000ms).
             SpeechAudioResult? result = null;
@@ -228,48 +196,21 @@ public sealed class VttToAzureTtsService : IVttToAzureTtsService
                 }
             }
 
-            if (result is not null)
-            {
-                RecordVoicePaceSample(voicePaces, entryVoice, entry.Text.Length, rate, result.DurationMs);
-                await _voicePaceRepo.RecordSampleAsync(entryVoice, entry.Text.Length, rate, result.DurationMs, ct);
-            }
-
-            // If the synthesised audio overruns its subtitle window, recalculate the prosody
-            // rate from the actual overrun ratio and re-synthesise so the audio matches the
-            // window. An underrun is left alone — Phase 2 pads it with trailing silence.
+            // Stretch the naturally-paced clip's tempo (via ffmpeg) so its duration matches
+            // the subtitle window, in either direction — speeding up an overrun or slowing
+            // down an underrun. Falls back to the un-stretched clip if ffmpeg fails.
             if (result is not null && expectedMs > 0)
             {
-                for (int overrunAttempt = 1; overrunAttempt <= MaxOverrunRetries; overrunAttempt++)
+                try
                 {
-                    var actualMs = result.DurationMs;
-                    if (actualMs <= expectedMs + OverrunToleranceMs)
-                        break;
-
-                    var newRate = Math.Min(rate * actualMs / expectedMs, MaxRatePct);
-                    if (newRate <= rate)
-                        break; // already at the retry ceiling — retrying again won't help
-
-                    _logger.LogInformation(
-                        "Entry {I}/{Total} overran its window ({Actual}ms > {Expected}ms) at rate={Rate:F0}% — " +
-                        "retrying {Attempt}/{Max} at rate={NewRate:F0}%",
-                        i + 1, entries.Count, actualMs, expectedMs, rate, overrunAttempt, MaxOverrunRetries, newRate);
-
-                    rate = newRate;
-                    var retrySsml = BuildEntrySsml(entry.Text, entryVoice, lang, rate);
-                    try
-                    {
-                        result = await _engine.SpeakSsmlAsync(retrySsml, endpointUrl, subscriptionKey, entryVoice, ct);
-                        RecordVoicePaceSample(voicePaces, entryVoice, entry.Text.Length, rate, result.DurationMs);
-                        await _voicePaceRepo.RecordSampleAsync(entryVoice, entry.Text.Length, rate, result.DurationMs, ct);
-                    }
-                    catch (OperationCanceledException) { throw; }
-                    catch (Exception ex)
-                    {
-                        _logger.LogWarning(
-                            "Entry {I}/{Total} overrun retry {Attempt}/{Max} failed ({Msg}) — keeping previous audio",
-                            i + 1, entries.Count, overrunAttempt, MaxOverrunRetries, ex.Message);
-                        break;
-                    }
+                    result = await StretchToWindowAsync(result, expectedMs, ffmpegPath, tempDir, i, ct);
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(
+                        "Entry {I}/{Total} ffmpeg tempo-stretch failed ({Msg}) — keeping natural-pace audio",
+                        i + 1, entries.Count, ex.Message);
                 }
             }
 
@@ -325,9 +266,9 @@ public sealed class VttToAzureTtsService : IVttToAzureTtsService
                 {
                     spokenMs = actualMs;
 
-                    if (actualMs > expectedMs + OverrunToleranceMs)
+                    if (actualMs > expectedMs + WindowToleranceMs)
                         _logger.LogWarning(
-                            "Entry {I}/{Total} TTS audio ({Actual}ms) still overran its window ({Expected}ms) by {Over}ms after retries",
+                            "Entry {I}/{Total} TTS audio ({Actual}ms) still overran its window ({Expected}ms) by {Over}ms after ffmpeg tempo-stretch",
                             i + 1, entries.Count, actualMs, expectedMs, actualMs - expectedMs);
                 }
             }
@@ -346,77 +287,53 @@ public sealed class VttToAzureTtsService : IVttToAzureTtsService
         return ConcatenateWav(chunks);
     }
 
-    // ── Per-voice pace learning ──────────────────────────────────────────────
+    // ── Tempo stretching (ffmpeg) ─────────────────────────────────────────────
 
-    // Accumulates a voice's observed natural (100%-rate) chars/sec pace from
-    // synthesis results, back-derived from whatever rate was actually used —
-    // e.g. 40 chars in 1000ms at rate=200% implies 20 chars/sec at rate=100%.
-    internal sealed class VoicePace
+    // Writes the synthesised clip to a temp WAV in the job's working folder, runs it
+    // through ffmpeg's atempo filter so its duration matches expectedMs (speeding up an
+    // overrun or slowing down an underrun), and reads the stretched result back. The
+    // clip is always requested from Azure at its natural 100% rate — this is the only
+    // place playback speed is adjusted.
+    private async Task<SpeechAudioResult> StretchToWindowAsync(
+        SpeechAudioResult result, int expectedMs, string ffmpegPath, string tempDir, int index, CancellationToken ct)
     {
-        private double _totalChars;
-        private double _totalNaturalMs;
+        var actualMs = result.DurationMs;
+        if (Math.Abs(actualMs - expectedMs) <= WindowToleranceMs)
+            return result;
 
-        public int SampleCount { get; private set; }
+        var factor = Math.Clamp((double)actualMs / expectedMs, MinTempoFactor, MaxTempoFactor);
+        if (Math.Abs(factor - 1.0) < 0.01)
+            return result;
 
-        public VoicePace() { }
+        var inPath  = Path.Combine(tempDir, $"entry_{index}_in.wav");
+        var outPath = Path.Combine(tempDir, $"entry_{index}_out.wav");
 
-        // Seeds accumulated totals from a persisted VoicePaceStat (a prior session's
-        // learning for this voice), so this session continues from where the last left off.
-        public VoicePace(double totalChars, double totalNaturalMs, int sampleCount)
+        await using (var inStream = _fs.Create(inPath))
+            await inStream.WriteAsync(result.AudioData, ct);
+
+        await _processRunner.RunAsync(
+            ffmpegPath,
+            $"-y -i \"{inPath}\" -filter:a \"atempo={factor.ToString("0.####", System.Globalization.CultureInfo.InvariantCulture)}\" \"{outPath}\"",
+            ct);
+
+        byte[] stretchedAudio;
+        using (var outStream = _fs.OpenRead(outPath))
         {
-            _totalChars     = totalChars;
-            _totalNaturalMs = totalNaturalMs;
-            SampleCount     = sampleCount;
+            using var ms = new MemoryStream();
+            await outStream.CopyToAsync(ms, ct);
+            stretchedAudio = ms.ToArray();
         }
 
-        public void Record(int textLength, double rate, int actualMs)
-        {
-            if (textLength <= 0 || actualMs <= 0 || rate <= 0) return;
-            _totalChars     += textLength;
-            _totalNaturalMs += actualMs * rate / 100.0;
-            SampleCount++;
-        }
-
-        public double CharsPerSecondAt100 => _totalNaturalMs > 0 ? _totalChars / (_totalNaturalMs / 1000.0) : 0;
+        return result with { AudioData = stretchedAudio, DurationMs = GetWavDurationMs(stretchedAudio) };
     }
 
-    internal static void RecordVoicePaceSample(
-        Dictionary<string, VoicePace> voicePaces, string voice, int textLength, double rate, int actualMs)
-    {
-        if (!voicePaces.TryGetValue(voice, out var pace))
-            voicePaces[voice] = pace = new VoicePace();
-        pace.Record(textLength, rate, actualMs);
-    }
-
-    // Blends the file-wide chars/sec estimate with this voice's own observed pace once
-    // enough samples exist, ramping linearly between VoicePaceRampStartSamples (still
-    // purely the file-wide estimate) and VoicePaceRampFullSamples (purely voice-specific).
-    internal static double EffectiveCharsPerSecond(
-        Dictionary<string, VoicePace> voicePaces, string voice, double fallbackCharsPerSecond)
-    {
-        if (!voicePaces.TryGetValue(voice, out var pace) || pace.SampleCount <= VoicePaceRampStartSamples)
-            return fallbackCharsPerSecond;
-
-        var voiceCps = pace.CharsPerSecondAt100;
-        if (voiceCps <= 0) return fallbackCharsPerSecond;
-
-        var weight = pace.SampleCount >= VoicePaceRampFullSamples
-            ? 1.0
-            : (pace.SampleCount - VoicePaceRampStartSamples) / (double)(VoicePaceRampFullSamples - VoicePaceRampStartSamples);
-
-        return weight * voiceCps + (1 - weight) * fallbackCharsPerSecond;
-    }
-
-    private static string BuildEntrySsml(string text, string voiceName, string lang, double rate)
+    private static string BuildEntrySsml(string text, string voiceName, string lang)
     {
         var escaped = XmlEscape(text);
-        var content = Math.Abs(rate - 100.0) < 1.0
-            ? escaped
-            : $"<prosody rate=\"{FormatRateDelta(rate)}\">{escaped}</prosody>";
         return $"<?xml version=\"1.0\" encoding=\"UTF-8\"?>" +
                $"<speak version=\"1.0\" xmlns=\"http://www.w3.org/2001/10/synthesis\" " +
                $"xmlns:mstts=\"http://www.w3.org/2001/mstts\" xml:lang=\"{lang}\">" +
-               $"<voice name=\"{voiceName}\">{content}</voice>" +
+               $"<voice name=\"{voiceName}\">{escaped}</voice>" +
                $"</speak>";
     }
 

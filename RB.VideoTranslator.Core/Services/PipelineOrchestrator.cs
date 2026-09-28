@@ -369,6 +369,7 @@ public sealed class PipelineOrchestrator : IPipelineOrchestrator
                         voiceName,
                         voice.Lang,
                         speakerVoices,
+                        options.FfmpegPath,
                         ct);
 
                     await _audioMixer.MixAsync(working, options.FfmpegPath, ct);

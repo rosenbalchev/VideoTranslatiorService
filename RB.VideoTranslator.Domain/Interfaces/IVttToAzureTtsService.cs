@@ -24,5 +24,6 @@ public interface IVttToAzureTtsService
         string voiceName = "en-US-Ava:DragonHDLatestNeural",
         string lang = "en-US",
         IReadOnlyDictionary<string, string>? speakerVoices = null,
+        string ffmpegPath = "ffmpeg",
         CancellationToken ct = default);
 }

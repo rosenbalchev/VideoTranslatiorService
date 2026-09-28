@@ -75,29 +75,27 @@ public sealed class VttToAzureTtsServiceTests
         out IVideoJobRepository repo,
         out IFileSystem fs,
         out IAzureSpeechEngine engine,
-        out IVoicePaceRepository voicePaceRepo,
+        out IProcessRunner processRunner,
         string vttContent = SampleVtt)
     {
         repo          = Substitute.For<IVideoJobRepository>();
         fs            = Substitute.For<IFileSystem>();
         engine        = Substitute.For<IAzureSpeechEngine>();
-        voicePaceRepo = Substitute.For<IVoicePaceRepository>();
+        processRunner = Substitute.For<IProcessRunner>();
 
         fs.ReadAllTextAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
             .Returns(Task.FromResult(vttContent));
-        fs.Create(Arg.Any<string>()).Returns(new MemoryStream());
+        fs.Create(Arg.Any<string>()).Returns(_ => new MemoryStream());
+        // ffmpeg's "stretched" output — by default identical to the engine's own WAV, so
+        // tests that don't care about tempo-stretching see unchanged audio.
+        fs.OpenRead(Arg.Any<string>()).Returns(_ => new MemoryStream(FakeEngineWav));
         engine.SpeakSsmlAsync(
                 Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(),
                 Arg.Any<string>(), Arg.Any<CancellationToken>())
             .Returns(Task.FromResult(FakeEngineResult));
-        // No prior learning history by default — individual tests override this to
-        // simulate a voice with accumulated pace data from earlier sessions.
-        voicePaceRepo.GetAllAsync(Arg.Any<CancellationToken>())
-            .Returns(Task.FromResult<IReadOnlyDictionary<string, VoicePaceStat>>(
-                new Dictionary<string, VoicePaceStat>()));
 
         return new VttToAzureTtsService(
-            repo, fs, engine, voicePaceRepo,
+            repo, fs, engine, processRunner,
             NullLogger<VttToAzureTtsService>.Instance);
     }
 
@@ -235,47 +233,64 @@ public sealed class VttToAzureTtsServiceTests
             "en-US-Ava:DragonHDLatestNeural", Arg.Any<CancellationToken>());
     }
 
-    // ── Voice pace learning persistence ───────────────────────────────────────
+    // ── 100%-rate synthesis / tempo stretching ────────────────────────────────
 
     [Fact]
-    public async Task SynthesiseAsync_RecordsSamplesToVoicePaceRepository()
+    public async Task SynthesiseAsync_NeverEmitsProsodyRateInPerEntrySsml()
     {
-        var sut = MakeSut(out _, out _, out var engine, out var voicePaceRepo);
+        // Azure is always asked for its natural 100% rate — timing correction happens
+        // afterwards via ffmpeg, never via an SSML <prosody rate="..."> wrapper.
+        var sut = MakeSut(out _, out _, out var engine);
 
-        await sut.SynthesiseAsync(MakeJob(), "key", "https://ep/", "en-US-Ava:DragonHDLatestNeural");
+        await sut.SynthesiseAsync(MakeJob(), "key", "https://ep/");
 
-        await voicePaceRepo.Received().RecordSampleAsync(
-            "en-US-Ava:DragonHDLatestNeural", Arg.Any<int>(), Arg.Any<double>(), Arg.Any<int>(), Arg.Any<CancellationToken>());
+        await engine.Received(2).SpeakSsmlAsync(
+            Arg.Is<string>(s => !s.Contains("<prosody")),
+            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]
-    public async Task SynthesiseAsync_UsesPersistedVoiceHistoryToPickInitialRate()
+    public async Task SynthesiseAsync_InvokesFfmpegToStretchEntryAudioToItsWindow()
     {
-        // "Hello world" is 11 chars in a 2000ms window (SampleVtt's first entry).
-        // A voice already known (from prior sessions) to speak at 3 chars/sec needs
-        // (11/3*1000)/2000*100 ≈ 183% to fit — nowhere near DefaultRatePct (120%),
-        // which is what a cold-start (no history) session would request instead.
-        const string voice = "en-US-Ava:DragonHDLatestNeural";
-        var history = new Dictionary<string, VoicePaceStat>
-        {
-            [voice] = new VoicePaceStat
-            {
-                Voice          = voice,
-                TotalChars     = 300,
-                TotalNaturalMs = 100_000, // 300 chars / 100s = 3 chars/sec at rate=100%
-                SampleCount    = VttToAzureTtsService.VoicePaceRampFullSamples, // fully ramped
-            }
-        };
+        // FakeEngineResult's natural duration is far shorter than the 2000ms subtitle
+        // window, so ffmpeg's atempo filter must be invoked to stretch it.
+        var sut = MakeSut(out _, out _, out _, out var processRunner);
 
-        var sut = MakeSut(out _, out _, out var engine, out var voicePaceRepo);
-        voicePaceRepo.GetAllAsync(Arg.Any<CancellationToken>())
-            .Returns(Task.FromResult<IReadOnlyDictionary<string, VoicePaceStat>>(history));
+        await sut.SynthesiseAsync(MakeJob(), "key", "https://ep/", ffmpegPath: "myffmpeg");
 
-        await sut.SynthesiseAsync(MakeJob(), "key", "https://ep/", voice);
+        await processRunner.Received().RunAsync(
+            "myffmpeg", Arg.Is<string>(a => a.Contains("atempo=")), Arg.Any<CancellationToken>());
+    }
 
-        await engine.Received(1).SpeakSsmlAsync(
-            Arg.Is<string>(s => s.Contains("Hello world") && s.Contains("<prosody rate=\"+83%\">")),
-            Arg.Any<string>(), Arg.Any<string>(), voice, Arg.Any<CancellationToken>());
+    [Fact]
+    public async Task SynthesiseAsync_CreatesTempWorkingFolderForFfmpegIo()
+    {
+        var sut = MakeSut(out _, out var fs, out _);
+
+        await sut.SynthesiseAsync(MakeJob(), "key", "https://ep/");
+
+        fs.Received().CreateDirectory(Path.Combine("/proc", "tts_tmp"));
+    }
+
+    [Fact]
+    public async Task SynthesiseAsync_SkipsFfmpegWhenEntryAlreadyFitsItsWindow()
+    {
+        // Make the engine's audio duration match the window exactly (2000ms @ 44100Hz
+        // 16-bit mono) — no tempo adjustment should be needed.
+        var sut = MakeSut(out _, out _, out var engine, out var processRunner);
+        var exactWav = MakeWav(pcmBytes: 44100 * 2 * 2); // 2000ms mono 16-bit @ 44100Hz
+        var exactResult = new SpeechAudioResult(
+            exactWav, SampleRate: 44100, Channels: 1, BitsPerSample: 16,
+            DurationMs: VttToAzureTtsService.GetWavDurationMs(exactWav));
+        engine.SpeakSsmlAsync(
+                Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(),
+                Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(exactResult));
+
+        await sut.SynthesiseAsync(MakeJob(), "key", "https://ep/");
+
+        await processRunner.DidNotReceive().RunAsync(
+            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
     }
 
     // ── Per-speaker voice assignment ──────────────────────────────────────────
@@ -724,149 +739,6 @@ public sealed class VttToAzureTtsServiceTests
         Assert.Contains($"<prosody rate=\"{VttToAzureTtsService.FormatRateDelta(VttToAzureTtsService.MinRatePct)}\">", ssml);
     }
 
-    // ── VoicePace / EffectiveCharsPerSecond unit tests ────────────────────────
-
-    [Fact]
-    public void VoicePace_StartsWithNoSamplesAndZeroPace()
-    {
-        var pace = new VttToAzureTtsService.VoicePace();
-        Assert.Equal(0, pace.SampleCount);
-        Assert.Equal(0, pace.CharsPerSecondAt100);
-    }
-
-    [Fact]
-    public void VoicePace_Record_DerivesNaturalPaceFromRateAndActualDuration()
-    {
-        // 40 chars spoken in 1000ms at rate=200% → at rate=100% it would take 2000ms
-        // → natural pace = 40 chars / 2s = 20 chars/sec.
-        var pace = new VttToAzureTtsService.VoicePace();
-        pace.Record(textLength: 40, rate: 200.0, actualMs: 1000);
-
-        Assert.Equal(1, pace.SampleCount);
-        Assert.Equal(20.0, pace.CharsPerSecondAt100, precision: 6);
-    }
-
-    [Fact]
-    public void VoicePace_Record_AccumulatesWeightedAverageAcrossSamples()
-    {
-        var pace = new VttToAzureTtsService.VoicePace();
-        pace.Record(textLength: 40, rate: 200.0, actualMs: 1000); // natural: 40 chars / 2000ms
-        pace.Record(textLength: 40, rate: 200.0, actualMs: 1000); // natural: 40 chars / 2000ms
-
-        Assert.Equal(2, pace.SampleCount);
-        // 80 chars / 4000ms = 20 chars/sec — same pace, more samples.
-        Assert.Equal(20.0, pace.CharsPerSecondAt100, precision: 6);
-    }
-
-    [Theory]
-    [InlineData(0, 100.0, 1000)]
-    [InlineData(40, 0.0, 1000)]
-    [InlineData(40, 100.0, 0)]
-    public void VoicePace_Record_IgnoresInvalidSamples(int textLength, double rate, int actualMs)
-    {
-        var pace = new VttToAzureTtsService.VoicePace();
-        pace.Record(textLength, rate, actualMs);
-
-        Assert.Equal(0, pace.SampleCount);
-    }
-
-    [Fact]
-    public void VoicePace_SeededConstructor_StartsFromPersistedTotals()
-    {
-        var pace = new VttToAzureTtsService.VoicePace(totalChars: 80, totalNaturalMs: 4000, sampleCount: 2);
-
-        Assert.Equal(2, pace.SampleCount);
-        Assert.Equal(20.0, pace.CharsPerSecondAt100, precision: 6);
-    }
-
-    [Fact]
-    public void RecordVoicePaceSample_CreatesEntryForUnseenVoice()
-    {
-        var voicePaces = new Dictionary<string, VttToAzureTtsService.VoicePace>();
-
-        VttToAzureTtsService.RecordVoicePaceSample(voicePaces, "VoiceA", textLength: 40, rate: 200.0, actualMs: 1000);
-
-        Assert.True(voicePaces.ContainsKey("VoiceA"));
-        Assert.Equal(1, voicePaces["VoiceA"].SampleCount);
-    }
-
-    [Fact]
-    public void RecordVoicePaceSample_AccumulatesForSameVoiceAcrossCalls()
-    {
-        var voicePaces = new Dictionary<string, VttToAzureTtsService.VoicePace>();
-
-        VttToAzureTtsService.RecordVoicePaceSample(voicePaces, "VoiceA", 40, 200.0, 1000);
-        VttToAzureTtsService.RecordVoicePaceSample(voicePaces, "VoiceA", 40, 200.0, 1000);
-
-        Assert.Equal(2, voicePaces["VoiceA"].SampleCount);
-    }
-
-    [Fact]
-    public void EffectiveCharsPerSecond_ReturnsFallback_WhenVoiceUnknown()
-    {
-        var voicePaces = new Dictionary<string, VttToAzureTtsService.VoicePace>();
-
-        var result = VttToAzureTtsService.EffectiveCharsPerSecond(voicePaces, "VoiceA", fallbackCharsPerSecond: 13.0);
-
-        Assert.Equal(13.0, result);
-    }
-
-    [Fact]
-    public void EffectiveCharsPerSecond_ReturnsFallback_AtOrBelowRampStartSamples()
-    {
-        var voicePaces = new Dictionary<string, VttToAzureTtsService.VoicePace>();
-        for (var i = 0; i < VttToAzureTtsService.VoicePaceRampStartSamples; i++)
-            VttToAzureTtsService.RecordVoicePaceSample(voicePaces, "VoiceA", 40, 200.0, 1000); // implies 20 c/s
-
-        var result = VttToAzureTtsService.EffectiveCharsPerSecond(voicePaces, "VoiceA", fallbackCharsPerSecond: 13.0);
-
-        Assert.Equal(13.0, result);
-    }
-
-    [Fact]
-    public void EffectiveCharsPerSecond_ReturnsPureVoicePace_AtOrAboveRampFullSamples()
-    {
-        var voicePaces = new Dictionary<string, VttToAzureTtsService.VoicePace>();
-        for (var i = 0; i < VttToAzureTtsService.VoicePaceRampFullSamples; i++)
-            VttToAzureTtsService.RecordVoicePaceSample(voicePaces, "VoiceA", 40, 200.0, 1000); // implies 20 c/s
-
-        var result = VttToAzureTtsService.EffectiveCharsPerSecond(voicePaces, "VoiceA", fallbackCharsPerSecond: 13.0);
-
-        Assert.Equal(20.0, result, precision: 6);
-    }
-
-    [Fact]
-    public void EffectiveCharsPerSecond_BlendsLinearlyBetweenRampStartAndRampFull()
-    {
-        var voicePaces = new Dictionary<string, VttToAzureTtsService.VoicePace>();
-        // Halfway between RampStartSamples (5) and RampFullSamples (10) = 7 or 8 samples.
-        var samples = (VttToAzureTtsService.VoicePaceRampStartSamples + VttToAzureTtsService.VoicePaceRampFullSamples) / 2;
-        for (var i = 0; i < samples; i++)
-            VttToAzureTtsService.RecordVoicePaceSample(voicePaces, "VoiceA", 40, 200.0, 1000); // implies 20 c/s
-
-        var result = VttToAzureTtsService.EffectiveCharsPerSecond(voicePaces, "VoiceA", fallbackCharsPerSecond: 13.0);
-
-        // Strictly between the fallback and the fully-learned voice pace, not equal to either.
-        Assert.InRange(result, Math.Min(13.0, 20.0), Math.Max(13.0, 20.0));
-        Assert.NotEqual(13.0, result);
-        Assert.NotEqual(20.0, result);
-    }
-
-    [Fact]
-    public void EffectiveCharsPerSecond_SeededFromPersistedHistory_SkipsRampWhenAlreadyFullyLearned()
-    {
-        // Simulates loading a voice with plenty of prior-session history — should be
-        // treated as fully learned immediately, no ramp-up needed in this session.
-        var voicePaces = new Dictionary<string, VttToAzureTtsService.VoicePace>
-        {
-            ["VoiceA"] = new VttToAzureTtsService.VoicePace(totalChars: 4000, totalNaturalMs: 200_000, sampleCount: 100)
-        };
-
-        var result = VttToAzureTtsService.EffectiveCharsPerSecond(voicePaces, "VoiceA", fallbackCharsPerSecond: 13.0);
-
-        Assert.Equal(20.0, result, precision: 6);
-    }
-
     // ── FormatRateDelta unit tests ────────────────────────────────────────────
 
     [Theory]
@@ -1033,7 +905,7 @@ public sealed class VttToAzureTtsServiceTests
         // FakeEngineWav is mono; job defaults to AudioChannels=2 → must upmix to stereo.
         var capturedWav = new MemoryStream();
         var sut = MakeSut(out _, out var fs, out _);
-        fs.Create(Arg.Any<string>()).Returns(capturedWav);
+        fs.Create(Arg.Is<string>(p => p.EndsWith("_azure_tts.wav"))).Returns(capturedWav);
 
         await sut.SynthesiseAsync(MakeJob(), "key", "https://ep/");
 
@@ -1048,7 +920,7 @@ public sealed class VttToAzureTtsServiceTests
         // Mono source video → mono TTS stays mono (no upmix needed).
         var capturedWav = new MemoryStream();
         var sut = MakeSut(out _, out var fs, out _);
-        fs.Create(Arg.Any<string>()).Returns(capturedWav);
+        fs.Create(Arg.Is<string>(p => p.EndsWith("_azure_tts.wav"))).Returns(capturedWav);
 
         var job = MakeJob();
         job.AudioChannels = 1;
@@ -1065,7 +937,7 @@ public sealed class VttToAzureTtsServiceTests
         // 5.1 source video — dubbed track capped at stereo (not 6ch).
         var capturedWav = new MemoryStream();
         var sut = MakeSut(out _, out var fs, out _);
-        fs.Create(Arg.Any<string>()).Returns(capturedWav);
+        fs.Create(Arg.Is<string>(p => p.EndsWith("_azure_tts.wav"))).Returns(capturedWav);
 
         var job = MakeJob();
         job.AudioChannels = 6; // 5.1

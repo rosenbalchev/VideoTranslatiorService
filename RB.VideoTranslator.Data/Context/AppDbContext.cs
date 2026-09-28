@@ -8,7 +8,6 @@ public class AppDbContext : DbContext
     public AppDbContext(DbContextOptions<AppDbContext> options) : base(options) { }
 
     public DbSet<VideoJob> VideoJobs => Set<VideoJob>();
-    public DbSet<VoicePaceStat> VoicePaceStats => Set<VoicePaceStat>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -16,11 +15,6 @@ public class AppDbContext : DbContext
         {
             entity.HasKey(e => e.Id);
             entity.Property(e => e.State).HasConversion<string>();
-        });
-
-        modelBuilder.Entity<VoicePaceStat>(entity =>
-        {
-            entity.HasKey(e => e.Voice);
         });
     }
 }
