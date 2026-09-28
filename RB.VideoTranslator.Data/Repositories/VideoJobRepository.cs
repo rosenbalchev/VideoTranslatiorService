@@ -38,6 +38,7 @@ public sealed class VideoJobRepository : IVideoJobRepository
             JobState.AudioExtracted,
             JobState.VttExtracted,
             JobState.VoiceRemoved,
+            JobState.SpeakerSamplesExtracted,
             JobState.MixedNoVoiceWithSyntheticVoice,
             // in-progress (orchestrator resets these to their stable predecessor and retries)
             JobState.SeparatingMedia,
