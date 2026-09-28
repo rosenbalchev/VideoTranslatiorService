@@ -250,16 +250,42 @@ public sealed class VttToAzureTtsServiceTests
     }
 
     [Fact]
-    public async Task SynthesiseAsync_InvokesFfmpegToStretchEntryAudioToItsWindow()
+    public async Task SynthesiseAsync_DoesNotSlowDownUnderrunEntry()
     {
         // FakeEngineResult's natural duration is far shorter than the 2000ms subtitle
-        // window, so ffmpeg's atempo filter must be invoked to stretch it.
+        // window. Underruns are never slowed down — only overruns get tempo-stretched —
+        // so ffmpeg's atempo filter must NOT be invoked here; the gap is padded with silence.
         var sut = MakeSut(out _, out _, out _, out var processRunner);
 
         await sut.SynthesiseAsync(MakeJob(), "key", "https://ep/", ffmpegPath: "myffmpeg");
 
+        await processRunner.DidNotReceive().RunAsync(
+            Arg.Any<string>(), Arg.Is<string>(a => a.Contains("atempo=")), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task SynthesiseAsync_SpeedsUpOverrunEntry()
+    {
+        // Entry 1 spans 1000ms→3000ms (2000ms natural window) and entry 2 starts at
+        // 5000ms, so entry 1 may borrow up to 5000 - MinGapBeforeNextMs(1000) = 4000ms,
+        // i.e. an expanded window of 3000ms. Make the engine's clip 3500ms — longer than
+        // even that expanded window — so it must be sped up to fit it.
+        var sut = MakeSut(out _, out var fs, out var engine, out var processRunner);
+        var overrunWav = MakeWav(pcmBytes: 44100 * 2 * 3500 / 1000); // ~3500ms mono 16-bit @ 44100Hz
+        var overrunResult = new SpeechAudioResult(
+            overrunWav, SampleRate: 44100, Channels: 1, BitsPerSample: 16,
+            DurationMs: VttToAzureTtsService.GetWavDurationMs(overrunWav));
+        engine.SpeakSsmlAsync(
+                Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(),
+                Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(overrunResult));
+        fs.OpenRead(Arg.Any<string>()).Returns(_ => new MemoryStream(overrunWav));
+
+        await sut.SynthesiseAsync(MakeJob(), "key", "https://ep/", ffmpegPath: "myffmpeg");
+
+        // Target is the expanded 3000ms window, not the natural 2000ms one: factor ≈ 3500/3000.
         await processRunner.Received().RunAsync(
-            "myffmpeg", Arg.Is<string>(a => a.Contains("atempo=")), Arg.Any<CancellationToken>());
+            "myffmpeg", Arg.Is<string>(a => a.Contains("atempo=1.1667")), Arg.Any<CancellationToken>());
     }
 
     [Fact]
@@ -685,12 +711,12 @@ public sealed class VttToAzureTtsServiceTests
     [Fact]
     public void SpeechRateFor_ReturnsExactNaturalRateBetweenMinAndMax()
     {
-        // 20 chars at 10 c/s = 2000ms natural, in a 2500ms window → 80%. Strictly between
+        // 30 chars at 10 c/s = 3000ms natural, in a 2000ms window → 150%. Strictly between
         // MinRatePct and MaxRatePct, so the computed rate should be used as-is — not
         // floored or ceilinged — proving the rate is genuinely chars/window-driven.
-        var text = new string('x', 20);
-        var rate = VttToAzureTtsService.SpeechRateFor(text, availableMs: 2500, charsPerSecond: 10.0);
-        Assert.Equal(80.0, rate, precision: 6);
+        var text = new string('x', 30);
+        var rate = VttToAzureTtsService.SpeechRateFor(text, availableMs: 2000, charsPerSecond: 10.0);
+        Assert.Equal(150.0, rate, precision: 6);
     }
 
     [Fact]
@@ -729,14 +755,15 @@ public sealed class VttToAzureTtsServiceTests
     }
 
     [Fact]
-    public void BuildSsml_SlowsDownForGenerousWindow()
+    public void BuildSsml_DoesNotSlowDownForGenerousWindow()
     {
-        // 13 chars / 13 c/s = 1000ms natural, in a 4000ms window → 25% natural rate,
-        // clamped up to MinRatePct — genuinely slower than DefaultRatePct used to force.
+        // 13 chars / 13 c/s = 1000ms natural, in a 4000ms window → a naturally slow 25%
+        // rate, but MinRatePct floors the pace at 100% (natural speed) — never slower —
+        // so no <prosody> wrapper is emitted at all for this entry.
         var text    = new string('x', 13);
         var entries = new List<VttEntry> { new(0, 4000, text) };
         var ssml    = VttToAzureTtsService.BuildSsml(entries, "Voice", "en-US");
-        Assert.Contains($"<prosody rate=\"{VttToAzureTtsService.FormatRateDelta(VttToAzureTtsService.MinRatePct)}\">", ssml);
+        Assert.DoesNotContain("<prosody", ssml);
     }
 
     // ── FormatRateDelta unit tests ────────────────────────────────────────────

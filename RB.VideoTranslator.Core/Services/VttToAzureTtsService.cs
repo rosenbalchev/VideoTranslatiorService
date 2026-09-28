@@ -19,6 +19,14 @@ public sealed class VttToAzureTtsService : IVttToAzureTtsService
     // Hard cap on entries per synthesis call as a secondary safety measure.
     private const int MaxEntriesPerSegment = 30;
 
+    // Floor and ceiling for the computed speech rate — past MinRatePct, speech starts
+    // sounding unnaturally sluggish; past MaxRatePct, it stops being intelligible. Between
+    // them, the rate is driven purely by chars ÷ window ÷ chars-per-second (see
+    // SpeechRateFor), so a generous window genuinely slows the voice down instead of always
+    // padding a fixed-rate clip with trailing silence.
+    public const double MinRatePct = 100.0;
+    public const double MaxRatePct = 200.0;
+
     private readonly IVideoJobRepository _repo;
     private readonly IFileSystem _fs;
     private readonly IAzureSpeechEngine _engine;
@@ -124,6 +132,29 @@ public sealed class VttToAzureTtsService : IVttToAzureTtsService
     internal const double MinTempoFactor = MinRatePct / 100.0;
     internal const double MaxTempoFactor = MaxRatePct / 100.0;
 
+    // When an entry's own subtitle window is too tight and would otherwise force a big
+    // tempo speed-up, it may borrow time from the gap before the next entry — but always
+    // leaving at least this much silence before that next line starts.
+    internal const int MinGapBeforeNextMs = 1000;
+
+    // Returns how long entry `i` is allowed to run for tempo-stretch purposes: its own
+    // subtitle window, extended to just before the next entry starts (minus
+    // MinGapBeforeNextMs) when that gives more room. Never shrinks the natural window.
+    internal static int ExpandedWindowMs(IReadOnlyList<VttEntry> entries, int i)
+    {
+        var entry      = entries[i];
+        var windowEndMs = entry.EndMs;
+
+        if (i + 1 < entries.Count)
+        {
+            var borrowedEndMs = entries[i + 1].StartMs - MinGapBeforeNextMs;
+            if (borrowedEndMs > windowEndMs)
+                windowEndMs = borrowedEndMs;
+        }
+
+        return windowEndMs - entry.StartMs;
+    }
+
     private async Task<byte[]> SynthesisePerEntryAsync(
         IReadOnlyList<VttEntry> entries,
         string endpointUrl,
@@ -146,6 +177,15 @@ public sealed class VttToAzureTtsService : IVttToAzureTtsService
         var bitsPerSample  = 16;
         var formatDetected = false;
 
+        // Precompute each entry's tempo-stretch window. An entry isn't limited to its own
+        // subtitle window — it may borrow from the gap before the NEXT entry starts, as
+        // long as at least MinGapBeforeNextMs of silence is left before that next entry.
+        // This avoids speeding speech up unnecessarily just because the subtitle cue itself
+        // is short, when there was actually plenty of room before the next line begins.
+        var windowMs = new int[entries.Count];
+        for (int i = 0; i < entries.Count; i++)
+            windowMs[i] = ExpandedWindowMs(entries, i);
+
         // Use this entry's assigned per-speaker voice when one exists, otherwise the
         // single default voice (also the behaviour when diarization produced no header).
         string ResolveVoice(VttEntry e) =>
@@ -158,7 +198,7 @@ public sealed class VttToAzureTtsService : IVttToAzureTtsService
             ct.ThrowIfCancellationRequested();
 
             var entry      = entries[i];
-            var expectedMs = entry.EndMs - entry.StartMs;
+            var expectedMs = windowMs[i];
             var entryVoice = ResolveVoice(entry);
 
             var ssml = BuildEntrySsml(entry.Text, entryVoice, lang);
@@ -199,11 +239,12 @@ public sealed class VttToAzureTtsService : IVttToAzureTtsService
             // Stretch the naturally-paced clip's tempo (via ffmpeg) so its duration matches
             // the subtitle window, in either direction — speeding up an overrun or slowing
             // down an underrun. Falls back to the un-stretched clip if ffmpeg fails.
+            var naturalMs = entry.EndMs - entry.StartMs;
             if (result is not null && expectedMs > 0)
             {
                 try
                 {
-                    result = await StretchToWindowAsync(result, expectedMs, ffmpegPath, tempDir, i, ct);
+                    result = await StretchToWindowAsync(result, naturalMs, expectedMs, ffmpegPath, tempDir, i, ct);
                 }
                 catch (OperationCanceledException) { throw; }
                 catch (Exception ex)
@@ -242,7 +283,8 @@ public sealed class VttToAzureTtsService : IVttToAzureTtsService
         {
             var entry      = entries[i];
             var leadingMs  = Math.Max(0, entry.StartMs - curMs);
-            var expectedMs = entry.EndMs - entry.StartMs;
+            var naturalMs  = entry.EndMs - entry.StartMs;
+            var maxMs      = windowMs[i];
 
             if (leadingMs > 0)
                 chunks.Add(MakeSilenceWav(leadingMs, sampleRate, targetChannels, bitsPerSample));
@@ -256,29 +298,32 @@ public sealed class VttToAzureTtsService : IVttToAzureTtsService
                     : entryResult.AudioData;
                 chunks.Add(finalAudio);
                 var actualMs = entryResult.DurationMs; // duration unchanged by upmix
-                var padMs    = expectedMs - actualMs;
+                var padMs    = naturalMs - actualMs;
                 if (padMs > 50)
                 {
+                    // Underrun — pad back up to the entry's own subtitle window, same as before.
                     chunks.Add(MakeSilenceWav(padMs, sampleRate, targetChannels, bitsPerSample));
-                    spokenMs = expectedMs;
+                    spokenMs = naturalMs;
                 }
                 else
                 {
+                    // Fits within (or overran) the natural window — spokenMs is whatever the
+                    // clip actually takes, which may extend into the borrowed gap up to maxMs.
                     spokenMs = actualMs;
 
-                    if (actualMs > expectedMs + WindowToleranceMs)
+                    if (actualMs > maxMs + WindowToleranceMs)
                         _logger.LogWarning(
                             "Entry {I}/{Total} TTS audio ({Actual}ms) still overran its window ({Expected}ms) by {Over}ms after ffmpeg tempo-stretch",
-                            i + 1, entries.Count, actualMs, expectedMs, actualMs - expectedMs);
+                            i + 1, entries.Count, actualMs, maxMs, actualMs - maxMs);
                 }
             }
             else
             {
                 _logger.LogWarning(
                     "Entry {I}/{Total} returned invalid audio — substituting {Ms}ms silence",
-                    i + 1, entries.Count, expectedMs);
-                chunks.Add(MakeSilenceWav(Math.Max(expectedMs, 1), sampleRate, targetChannels, bitsPerSample));
-                spokenMs = expectedMs;
+                    i + 1, entries.Count, naturalMs);
+                chunks.Add(MakeSilenceWav(Math.Max(naturalMs, 1), sampleRate, targetChannels, bitsPerSample));
+                spokenMs = naturalMs;
             }
 
             curMs = Math.Max(curMs, entry.StartMs) + spokenMs;
@@ -290,18 +335,25 @@ public sealed class VttToAzureTtsService : IVttToAzureTtsService
     // ── Tempo stretching (ffmpeg) ─────────────────────────────────────────────
 
     // Writes the synthesised clip to a temp WAV in the job's working folder, runs it
-    // through ffmpeg's atempo filter so its duration matches expectedMs (speeding up an
-    // overrun or slowing down an underrun), and reads the stretched result back. The
-    // clip is always requested from Azure at its natural 100% rate — this is the only
-    // place playback speed is adjusted.
+    // through ffmpeg's atempo filter so an overrun fits its window, and reads the stretched
+    // result back. The clip is always requested from Azure at its natural 100% rate — this
+    // is the only place playback speed is adjusted.
+    // naturalMs is the entry's own subtitle window; maxMs is the expanded window that may
+    // borrow time from the gap before the next entry (see ExpandedWindowMs). The target is
+    // maxMs whenever the clip runs past its natural window, otherwise naturalMs — but
+    // MinRatePct/MinTempoFactor is the actual knob that decides whether that ever slows the
+    // clip down: at its default of 100.0 the floor is 1.0, so the clamp below never lets the
+    // factor drop under natural pace, making this effectively speed-up-only. Lowering
+    // MinRatePct re-enables slowing down underruns to fill their window.
     private async Task<SpeechAudioResult> StretchToWindowAsync(
-        SpeechAudioResult result, int expectedMs, string ffmpegPath, string tempDir, int index, CancellationToken ct)
+        SpeechAudioResult result, int naturalMs, int maxMs, string ffmpegPath, string tempDir, int index, CancellationToken ct)
     {
-        var actualMs = result.DurationMs;
-        if (Math.Abs(actualMs - expectedMs) <= WindowToleranceMs)
+        var actualMs  = result.DurationMs;
+        var targetMs  = actualMs > naturalMs ? maxMs : naturalMs;
+        if (Math.Abs(actualMs - targetMs) <= WindowToleranceMs)
             return result;
 
-        var factor = Math.Clamp((double)actualMs / expectedMs, MinTempoFactor, MaxTempoFactor);
+        var factor = Math.Clamp((double)actualMs / targetMs, MinTempoFactor, MaxTempoFactor);
         if (Math.Abs(factor - 1.0) < 0.01)
             return result;
 
@@ -373,14 +425,6 @@ public sealed class VttToAzureTtsService : IVttToAzureTtsService
     // there's no chars/window math to run in those cases, so this is just a sane default,
     // not a floor on the computed rate (see MinRatePct for that).
     public const double DefaultRatePct = 120.0;
-
-    // Floor and ceiling for the computed rate — past MinRatePct, speech starts sounding
-    // unnaturally sluggish; past MaxRatePct, it stops being intelligible. Between them,
-    // the rate is driven purely by chars ÷ window ÷ chars-per-second (see SpeechRateFor),
-    // so a generous window genuinely slows the voice down instead of always padding a
-    // fixed-rate clip with trailing silence.
-    public const double MinRatePct = 70.0;
-    public const double MaxRatePct = 200.0;
 
     internal static string BuildSsml(
         IReadOnlyList<VttEntry> entries,
